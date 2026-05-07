@@ -273,6 +273,8 @@ function M.open(opts)
         vim.bo[bufnr].modifiable = true
         set_status(bufnr, "rewrite failed: " .. tostring(message))
       end
+    end, function(status)
+      set_status(bufnr, tostring(status))
     end)
   end
 

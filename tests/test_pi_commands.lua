@@ -919,6 +919,8 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   MiniTest.expect.equality(has_arg(system.get_cmd(), "--mode"), nil)
   MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--no-tools"), nil)
   MiniTest.expect.no_equality(system.get_stdin():match("fix this maybe"), nil)
+  MiniTest.expect.no_equality(system.get_stdin():match("File: /test/prompt%-rewrite%.lua"), nil)
+  MiniTest.expect.no_equality(system.get_stdin():match("Neovim context for rewriting only"), nil)
   MiniTest.expect.equality(system.get_stdin():match('"type":"prompt"'), nil)
   system.stdout("Fix the selected code while preserving behavior.\n")
   system.exit(0, 0)
@@ -928,6 +930,37 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   MiniTest.expect.no_equality(text:match("Fix the selected code while preserving behavior%."), nil)
   MiniTest.expect.no_equality(text:match("Status: optimized"), nil)
   MiniTest.expect.no_equality(text:match("Shortcuts:"), nil)
+end
+
+local function test_prompt_popup_rewrite_uses_range_context()
+  setup_test_env('require("pi").setup({ context = { max_bytes = 1000, selection = { surrounding_lines = 1 } } })')
+  child.lua([[require("pi.config").get().prompt.popup = true; require("pi.config").get().prompt.rewrite_key = "<Space>r"]])
+  setup_buffer({ "line1", "line2", "line3" }, "/test/prompt-rewrite-range.lua")
+  local system = mock_system()
+
+  child.cmd("2,3PiQuestion")
+  child.cmd("stopinsert")
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "# Prompt",
+    "",
+    "what does this do?",
+    "",
+    "# Optimized Prompt",
+    "",
+    "",
+    "---",
+    "Shortcuts:",
+  })]])
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
+  flush()
+
+  local stdin = system.get_stdin()
+  MiniTest.expect.no_equality(stdin:match("Selected lines: 2%-3"), nil)
+  MiniTest.expect.no_equality(stdin:match("line2"), nil)
+  MiniTest.expect.no_equality(stdin:match("line3"), nil)
+
+  system.stdout("Explain the selected lines.\n")
+  system.exit(0, 0)
 end
 
 local function test_prompt_popup_rewrites_from_print_stdout_without_newline()
@@ -1003,6 +1036,7 @@ T["PromptEditor"] = MiniTest.new_set()
 T["PromptEditor"]["submits multiline prompt"] = test_prompt_popup_submits_multiline_prompt
 T["PromptEditor"]["sends optimized prompt when present"] = test_prompt_popup_sends_optimized_prompt_when_present
 T["PromptEditor"]["rewrites prompt with ai"] = test_prompt_popup_rewrites_prompt_with_ai
+T["PromptEditor"]["rewrite uses range context"] = test_prompt_popup_rewrite_uses_range_context
 T["PromptEditor"]["rewrites from print stdout without newline"] = test_prompt_popup_rewrites_from_print_stdout_without_newline
 
 T["Commands"] = MiniTest.new_set()

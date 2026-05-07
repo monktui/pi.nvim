@@ -137,12 +137,23 @@ Rules:
 - Do not add new requirements.
 - Make ambiguity explicit as assumptions.
 - Keep the result concise.
+- Use the Neovim context to make vague references concrete when useful.
+- Do not answer the user prompt.
 - Return only the improved prompt.
 
 User prompt:
 ]]
 
-local function rewrite_prompt(text, on_done, on_finish, on_error)
+local function rewrite_input(text, built_context)
+  local parts = { REWRITE_PROMPT, text }
+  if built_context and built_context ~= "" then
+    table.insert(parts, "\n\nNeovim context for rewriting only:\n")
+    table.insert(parts, built_context)
+  end
+  return table.concat(parts) .. "\n"
+end
+
+local function rewrite_prompt(text, built_context, on_done, on_finish, on_error)
   if rewrite_process and not rewrite_process:is_closing() then
     local message = "pi prompt rewrite is already running"
     vim.notify(message, vim.log.levels.WARN)
@@ -211,7 +222,7 @@ local function rewrite_prompt(text, on_done, on_finish, on_error)
   end
 
   rewrite_process = process
-  process:write(REWRITE_PROMPT .. text .. "\n")
+  process:write(rewrite_input(text, built_context))
   local stdin = process._state and process._state.stdin
   if stdin then
     pcall(function()
@@ -607,7 +618,24 @@ local function prompt_for_command(command_name, command_opts, callback)
       on_submit = function(input)
         callback(input, build_context, range)
       end,
-      on_rewrite = cfg.prompt.ai_rewrite ~= false and rewrite_prompt or nil,
+      on_rewrite = cfg.prompt.ai_rewrite ~= false and function(input, on_done, on_finish, on_error, on_status)
+        if on_status then
+          on_status("collecting context...")
+        end
+        local ok, built_context = pcall(build_context)
+        if ok then
+          if on_status then
+            on_status("optimizing prompt...")
+          end
+          rewrite_prompt(input, built_context, on_done, on_finish, on_error)
+        else
+          if on_status then
+            on_status("optimizing without context...")
+          end
+          vim.notify("pi prompt rewrite context failed: " .. tostring(built_context), vim.log.levels.WARN)
+          rewrite_prompt(input, nil, on_done, on_finish, on_error)
+        end
+      end or nil,
     })
     return
   end

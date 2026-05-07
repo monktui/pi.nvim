@@ -188,7 +188,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 
 - Runs asynchronously and keeps editing nonblocking.
 - Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
-- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt`, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
+- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt` using the same buffer/selection context the final command will receive, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
 - `:PiActivity` toggles a markdown activity popup for the active or latest RPC request so you can see status changes and tool calls while pi works.
 - `:PiQuestion` and `:PiResearch` stream answers into a markdown popup after you send the prompt.
 - `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
