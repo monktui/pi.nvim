@@ -186,7 +186,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 
 - Runs asynchronously and keeps editing nonblocking.
 - Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
-- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup. Use normal/insert/visual mode freely, `<C-s>` or `<leader><CR>` to send, `<leader>r` to AI-rewrite, and `q` in normal mode to cancel.
+- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, and visible shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt`, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
 - `:PiQuestion` and `:PiResearch` stream answers into a markdown popup after you send the prompt.
 - `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
 - `:PiSession` and `:PiSessionQA` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.

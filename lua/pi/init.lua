@@ -146,6 +146,110 @@ local function rewrite_payload(text)
   }) .. "\n"
 end
 
+local function collect_message_text(value, out)
+  out = out or {}
+  if type(value) == "string" then
+    if value ~= "" then
+      table.insert(out, value)
+    end
+    return out
+  end
+  if type(value) ~= "table" then
+    return out
+  end
+
+  if value.type == "text" and type(value.text) == "string" then
+    table.insert(out, value.text)
+  elseif type(value.text) == "string" then
+    table.insert(out, value.text)
+  end
+
+  if value.content ~= nil then
+    collect_message_text(value.content, out)
+  end
+  if value.parts ~= nil then
+    collect_message_text(value.parts, out)
+  end
+  if value.message ~= nil and type(value.message) == "table" then
+    collect_message_text(value.message, out)
+  end
+
+  if #out == 0 then
+    for _, item in ipairs(value) do
+      collect_message_text(item, out)
+    end
+  end
+
+  return out
+end
+
+local function message_text(value)
+  return vim.trim(table.concat(collect_message_text(value), ""))
+end
+
+local function latest_assistant_message_text(messages)
+  if type(messages) ~= "table" then
+    return message_text(messages)
+  end
+
+  for index = #messages, 1, -1 do
+    local message = messages[index]
+    if type(message) == "table" and (message.role == nil or message.role == "assistant") then
+      local text = message_text(message)
+      if text ~= "" then
+        return text
+      end
+    end
+  end
+
+  return message_text(messages)
+end
+
+local function handle_rewrite_event(state, event)
+  if event.type == "message_update" then
+    local delta = event.assistantMessageEvent
+    if delta and delta.type == "text_delta" then
+      state.answer = state.answer .. (delta.delta or "")
+    end
+  elseif event.type == "turn_end" then
+    local text = message_text(event.assistantMessage or event.message)
+    if text ~= "" then
+      state.final_answer = text
+    end
+  elseif event.type == "agent_end" then
+    state.saw_done = true
+    local text = latest_assistant_message_text(event.messages or event.assistantMessage or event.message)
+    if text ~= "" then
+      state.final_answer = text
+    end
+  elseif event.type == "response" and event.success == false then
+    vim.notify("pi prompt rewrite failed: " .. tostring(event.error or "unknown error"), vim.log.levels.ERROR)
+  end
+end
+
+local function parse_rewrite_line(state, line)
+  if line == "" then
+    return
+  end
+  local decoded_ok, event = pcall(vim.json.decode, line)
+  if decoded_ok and event then
+    handle_rewrite_event(state, event)
+  end
+end
+
+local function parse_rewrite_stdout(state, data)
+  state.stdout_tail = state.stdout_tail .. (data or "")
+  while true do
+    local newline = state.stdout_tail:find("\n", 1, true)
+    if not newline then
+      break
+    end
+    local line = state.stdout_tail:sub(1, newline - 1)
+    state.stdout_tail = state.stdout_tail:sub(newline + 1)
+    parse_rewrite_line(state, line)
+  end
+end
+
 local function rewrite_prompt(text, on_done, on_finish)
   if rewrite_process and not rewrite_process:is_closing() then
     vim.notify("pi prompt rewrite is already running", vim.log.levels.WARN)
@@ -155,7 +259,7 @@ local function rewrite_prompt(text, on_done, on_finish)
     return
   end
 
-  local state = { stdout_tail = "", answer = "", saw_done = false }
+  local state = { stdout_tail = "", answer = "", final_answer = "", saw_done = false }
   local cmd = get_pi_cmd({ no_tools = true, prompt = "question" })
   local ok, process = pcall(vim.system, cmd, {
     text = true,
@@ -164,38 +268,20 @@ local function rewrite_prompt(text, on_done, on_finish)
       if err or not data then
         return
       end
-      state.stdout_tail = state.stdout_tail .. data
-      while true do
-        local newline = state.stdout_tail:find("\n", 1, true)
-        if not newline then
-          break
-        end
-        local line = state.stdout_tail:sub(1, newline - 1)
-        state.stdout_tail = state.stdout_tail:sub(newline + 1)
-        if line ~= "" then
-          local decoded_ok, event = pcall(vim.json.decode, line)
-          if decoded_ok and event then
-            if event.type == "message_update" then
-              local delta = event.assistantMessageEvent
-              if delta and delta.type == "text_delta" then
-                state.answer = state.answer .. (delta.delta or "")
-              end
-            elseif event.type == "agent_end" then
-              state.saw_done = true
-            elseif event.type == "response" and event.success == false then
-              vim.notify("pi prompt rewrite failed: " .. tostring(event.error or "unknown error"), vim.log.levels.ERROR)
-            end
-          end
-        end
-      end
+      parse_rewrite_stdout(state, data)
     end),
   }, vim.schedule_wrap(function(result)
     rewrite_process = nil
-    if result.code == 0 and state.answer ~= "" then
-      on_done(vim.trim(state.answer))
+    if state.stdout_tail and state.stdout_tail ~= "" then
+      parse_rewrite_line(state, state.stdout_tail)
+      state.stdout_tail = ""
+    end
+    local answer = state.answer ~= "" and state.answer or state.final_answer
+    if result.code == 0 and answer ~= "" then
+      on_done(vim.trim(answer))
     elseif result.code ~= 0 then
       vim.notify("pi prompt rewrite exited with code " .. result.code, vim.log.levels.ERROR)
-    elseif state.answer == "" then
+    elseif answer == "" then
       vim.notify("pi prompt rewrite produced no text", vim.log.levels.WARN)
     end
     if on_finish then

@@ -818,14 +818,55 @@ local function test_prompt_popup_submits_multiline_prompt()
   local system = mock_system()
 
   child.cmd("PiQuestion")
-  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "line one", "line two" })]])
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "# Prompt",
+    "",
+    "line one",
+    "line two",
+    "",
+    "# Optimized Prompt",
+    "",
+    "",
+    "---",
+    "Shortcuts:",
+    "<C-s>         Send optimized prompt",
+  })]])
   child.cmd("stopinsert")
   child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<C-s>", true, false, true), "xt")]])
   flush()
 
   local prompt = decode_prompt(system.get_stdin())
   MiniTest.expect.no_equality(prompt.message:match("line one\nline two"), nil)
+  MiniTest.expect.equality(prompt.message:match("Shortcuts:"), nil)
   MiniTest.expect.equality(arg_after(system.get_cmd(), "--tools"), "read,grep,find,ls,web_search,web_fetch")
+end
+
+local function test_prompt_popup_sends_optimized_prompt_when_present()
+  setup_test_env()
+  child.lua([[require("pi.config").get().prompt.popup = true]])
+  setup_buffer({ "code" }, "/test/prompt-popup-optimized.lua")
+  local system = mock_system()
+
+  child.cmd("PiQuestion")
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "# Prompt",
+    "",
+    "rough prompt",
+    "",
+    "# Optimized Prompt",
+    "",
+    "optimized prompt",
+    "",
+    "---",
+    "Shortcuts:",
+  })]])
+  child.cmd("stopinsert")
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<C-s>", true, false, true), "xt")]])
+  flush()
+
+  local prompt = decode_prompt(system.get_stdin())
+  MiniTest.expect.no_equality(prompt.message:match("optimized prompt"), nil)
+  MiniTest.expect.equality(prompt.message:match("rough prompt"), nil)
 end
 
 local function test_prompt_popup_rewrites_prompt_with_ai()
@@ -836,7 +877,17 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
 
   child.cmd("PiQuestion")
   child.cmd("stopinsert")
-  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "fix this maybe" })]])
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "# Prompt",
+    "",
+    "fix this maybe",
+    "",
+    "# Optimized Prompt",
+    "",
+    "",
+    "---",
+    "Shortcuts:",
+  })]])
   child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
   flush()
 
@@ -846,7 +897,38 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   system.exit(0, 0)
 
   local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
-  MiniTest.expect.equality(text, "Fix the selected code while preserving behavior.")
+  MiniTest.expect.no_equality(text:match("fix this maybe"), nil)
+  MiniTest.expect.no_equality(text:match("Fix the selected code while preserving behavior%."), nil)
+  MiniTest.expect.no_equality(text:match("Shortcuts:"), nil)
+end
+
+local function test_prompt_popup_rewrites_from_final_turn_text()
+  setup_test_env()
+  child.lua([[require("pi.config").get().prompt.popup = true; require("pi.config").get().prompt.rewrite_key = "<Space>r"]])
+  setup_buffer({ "code" }, "/test/prompt-rewrite-final.lua")
+  local system = mock_system()
+
+  child.cmd("PiQuestion")
+  child.cmd("stopinsert")
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "# Prompt",
+    "",
+    "explain this",
+    "",
+    "# Optimized Prompt",
+    "",
+    "",
+    "---",
+    "Shortcuts:",
+  })]])
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
+  flush()
+
+  system.stdout('{"type":"turn_end","assistantMessage":{"role":"assistant","content":[{"type":"text","text":"Explain this file purpose and main sections."}]}}')
+  system.exit(0, 0)
+
+  local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.no_equality(text:match("Explain this file purpose and main sections%."), nil)
 end
 
 local T = MiniTest.new_set()
@@ -891,7 +973,9 @@ T["PiHistory"]["commands open markdown buffers"] = test_history_commands_open_ma
 
 T["PromptEditor"] = MiniTest.new_set()
 T["PromptEditor"]["submits multiline prompt"] = test_prompt_popup_submits_multiline_prompt
+T["PromptEditor"]["sends optimized prompt when present"] = test_prompt_popup_sends_optimized_prompt_when_present
 T["PromptEditor"]["rewrites prompt with ai"] = test_prompt_popup_rewrites_prompt_with_ai
+T["PromptEditor"]["rewrites from final turn text"] = test_prompt_popup_rewrites_from_final_turn_text
 
 T["Commands"] = MiniTest.new_set()
 T["Commands"]["removed selection-specific commands are absent"] = test_removed_selection_commands_are_not_registered
