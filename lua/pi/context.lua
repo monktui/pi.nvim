@@ -84,6 +84,79 @@ local function content_block(label, text)
   return string.format("%s:\n```\n%s\n```", label, text)
 end
 
+local function buffer_metadata(bufnr, current_bufnr)
+  local filename = vim.api.nvim_buf_get_name(bufnr)
+  return {
+    bufnr = bufnr,
+    filename = filename,
+    filetype = filetype_for(bufnr),
+    line_count = vim.api.nvim_buf_line_count(bufnr),
+    modified = vim.bo[bufnr].modified,
+    current = bufnr == current_bufnr,
+  }
+end
+
+local function loaded_file_buffers(current_bufnr, include_open_buffers)
+  local buffers = {}
+  local seen = {}
+
+  if vim.api.nvim_buf_is_loaded(current_bufnr) and M.buffer_is_file_backed(current_bufnr) then
+    table.insert(buffers, current_bufnr)
+    seen[current_bufnr] = true
+  end
+
+  if include_open_buffers == false then
+    return buffers
+  end
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if not seen[bufnr] and vim.api.nvim_buf_is_loaded(bufnr) and M.buffer_is_file_backed(bufnr) then
+      table.insert(buffers, bufnr)
+      seen[bufnr] = true
+    end
+  end
+
+  return buffers
+end
+
+local function buffer_section(meta, max_buffer_bytes, selection_range)
+  local lines = vim.api.nvim_buf_get_lines(meta.bufnr, 0, -1, false)
+  local text, trimmed = truncate_to_bytes(table.concat(lines, "\n"), max_buffer_bytes)
+  local parts = {
+    string.format("File: %s", meta.filename),
+    string.format("Role: %s", meta.current and "current" or "open-buffer"),
+    string.format("Filetype: %s", meta.filetype),
+    string.format("Modified: %s", meta.modified and "true" or "false"),
+    string.format("Line count: %d", meta.line_count),
+  }
+
+  if meta.current and selection_range then
+    parts[#parts + 1] = string.format("Selected lines: %d-%d", selection_range.start, selection_range["end"])
+  end
+
+  parts[#parts + 1] = BUFFER_SOURCE_OF_TRUTH_NOTE
+
+  if meta.current and selection_range then
+    local selected_lines = vim.api.nvim_buf_get_lines(meta.bufnr, selection_range.start - 1, selection_range["end"], false)
+    local selected_text, selected_trimmed = truncate_to_bytes(table.concat(selected_lines, "\n"), max_buffer_bytes)
+    parts[#parts + 1] = content_block("Selected content", selected_text)
+    if selected_trimmed then
+      parts[#parts + 1] = string.format("NOTE: Selected content was trimmed (max_buffer_bytes=%d).", max_buffer_bytes)
+    end
+  end
+
+  parts[#parts + 1] = content_block("Buffer content", text)
+
+  if trimmed then
+    parts[#parts + 1] = string.format("NOTE: Buffer content was trimmed (max_buffer_bytes=%d).", max_buffer_bytes)
+  end
+  if buffer_is_empty(meta.bufnr) then
+    parts[#parts + 1] = EMPTY_FILE_NOTE
+  end
+
+  return table.concat(parts, "\n")
+end
+
 function M.get_system_prompt()
   return EDIT_SYSTEM_PROMPT
 end
@@ -166,6 +239,70 @@ function M.get_visual_context(bufnr, config, selection_range)
   end
 
   return table.concat(parts, "\n\n")
+end
+
+function M.get_workspace_context(current_bufnr, config, selection_range)
+  local session_config = config.session or {}
+  local max_buffer_bytes = session_config.max_buffer_bytes or config.context.max_bytes
+  local max_total_context_bytes = session_config.max_total_context_bytes or (config.context.max_bytes * 3)
+  local buffers = loaded_file_buffers(current_bufnr, session_config.include_open_buffers)
+  local metas = {}
+  local current_filename = vim.api.nvim_buf_get_name(current_bufnr)
+
+  for _, bufnr in ipairs(buffers) do
+    metas[#metas + 1] = buffer_metadata(bufnr, current_bufnr)
+  end
+
+  table.sort(metas, function(a, b)
+    if a.current ~= b.current then
+      return a.current
+    end
+    if a.modified ~= b.modified then
+      return a.modified
+    end
+    return a.filename < b.filename
+  end)
+
+  local summary = {
+    string.format("Cwd: %s", vim.fn.getcwd()),
+    string.format("Current file: %s", current_filename),
+  }
+
+  if selection_range then
+    summary[#summary + 1] = string.format("Selected lines: %d-%d", selection_range.start, selection_range["end"])
+  else
+    summary[#summary + 1] = string.format("Current line: %d", vim.api.nvim_win_get_cursor(0)[1])
+  end
+
+  summary[#summary + 1] = "Open buffers:"
+  for _, meta in ipairs(metas) do
+    local flags = {}
+    if meta.current then
+      flags[#flags + 1] = "current"
+    end
+    if meta.modified then
+      flags[#flags + 1] = "modified"
+    end
+    local suffix = #flags > 0 and string.format(" (%s)", table.concat(flags, ", ")) or ""
+    summary[#summary + 1] = string.format("- %s%s", meta.filename, suffix)
+  end
+
+  local parts = {
+    "Neovim workspace context",
+    table.concat(summary, "\n"),
+    "All file content below comes from currently loaded Neovim buffers and may include unsaved changes. Treat it as source of truth for these files.",
+  }
+
+  for _, meta in ipairs(metas) do
+    parts[#parts + 1] = buffer_section(meta, max_buffer_bytes, selection_range)
+  end
+
+  local text, trimmed = truncate_to_bytes(table.concat(parts, "\n\n"), max_total_context_bytes)
+  if trimmed then
+    text = text .. string.format("\n\nNOTE: Workspace context was trimmed (max_total_context_bytes=%d).", max_total_context_bytes)
+  end
+
+  return text
 end
 
 return M

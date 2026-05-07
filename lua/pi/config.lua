@@ -24,6 +24,26 @@ M.defaults = {
       surrounding_lines = 40,
     },
   },
+  prompt = {
+    popup = true,
+    ai_rewrite = true,
+    width = 0.65,
+    height = 0.35,
+    send_key = "<C-s>",
+    send_normal_key = "<leader><CR>",
+    rewrite_key = "<leader>r",
+    cancel_key = "q",
+  },
+  session = {
+    split = "right",
+    width = 0.35,
+    continue = true,
+    scope = "cwd",
+    inject_context = true,
+    include_open_buffers = true,
+    max_buffer_bytes = 12000,
+    max_total_context_bytes = 60000,
+  },
   skills = true,
   extensions = true,
 }
@@ -67,6 +87,40 @@ function M.validate(opts)
   end
   if opts.extensions ~= nil and type(opts.extensions) ~= "boolean" then
     error("pi.nvim: extensions must be a boolean")
+  end
+  if opts.prompt ~= nil then
+    if type(opts.prompt) ~= "table" then
+      error("pi.nvim: prompt must be a table")
+    end
+    if opts.prompt.popup ~= nil and type(opts.prompt.popup) ~= "boolean" then
+      error("pi.nvim: prompt.popup must be a boolean")
+    end
+    if opts.prompt.ai_rewrite ~= nil and type(opts.prompt.ai_rewrite) ~= "boolean" then
+      error("pi.nvim: prompt.ai_rewrite must be a boolean")
+    end
+  end
+  if opts.session ~= nil then
+    if type(opts.session) ~= "table" then
+      error("pi.nvim: session must be a table")
+    end
+    if opts.session.continue ~= nil and type(opts.session.continue) ~= "boolean" then
+      error("pi.nvim: session.continue must be a boolean")
+    end
+    if opts.session.inject_context ~= nil and type(opts.session.inject_context) ~= "boolean" then
+      error("pi.nvim: session.inject_context must be a boolean")
+    end
+    if opts.session.include_open_buffers ~= nil and type(opts.session.include_open_buffers) ~= "boolean" then
+      error("pi.nvim: session.include_open_buffers must be a boolean")
+    end
+    if opts.session.scope ~= nil and opts.session.scope ~= "cwd" and opts.session.scope ~= "global" then
+      error('pi.nvim: session.scope must be "cwd" or "global"')
+    end
+    if opts.session.max_buffer_bytes ~= nil then
+      validate_number("session.max_buffer_bytes", opts.session.max_buffer_bytes)
+    end
+    if opts.session.max_total_context_bytes ~= nil then
+      validate_number("session.max_total_context_bytes", opts.session.max_total_context_bytes)
+    end
   end
   if opts.thinking ~= nil then
     if type(opts.thinking) ~= "string" then

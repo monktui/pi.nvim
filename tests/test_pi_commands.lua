@@ -17,6 +17,7 @@ local function setup_test_env(setup_code)
     end
   ]])
   child.lua(setup_code or 'require("pi").setup({})')
+  child.lua([[require("pi.config").get().prompt.popup = false]])
 end
 
 local function setup_buffer(lines, filename)
@@ -112,15 +113,19 @@ local function mock_terminal()
       cmd = nil,
       sent = {},
       split_opened = false,
+      win_opts = nil,
     }
+
+    local original_open_win = vim.api.nvim_open_win
+    vim.api.nvim_open_win = function(buf, enter, opts)
+      _G.__pi_test_terminal.split_opened = opts and opts.split == "right"
+      _G.__pi_test_terminal.win_opts = opts
+      return original_open_win(buf, enter, opts)
+    end
 
     local original_cmd = vim.cmd
     vim.cmd = function(cmd)
-      if cmd == "botright split" then
-        _G.__pi_test_terminal.split_opened = true
-        return
-      end
-      if cmd == "resize 15" or cmd == "startinsert" then
+      if cmd == "startinsert" then
         return
       end
       return original_cmd(cmd)
@@ -145,6 +150,9 @@ local function mock_terminal()
     end,
     split_opened = function()
       return child.lua_get([[_G.__pi_test_terminal.split_opened]])
+    end,
+    get_win_opts = function()
+      return child.lua_get([[_G.__pi_test_terminal.win_opts]])
     end,
   }
 end
@@ -242,6 +250,16 @@ local function arg_after(cmd, flag)
     return nil
   end
   return cmd[idx + 1]
+end
+
+local function last_arg_after(cmd, flag)
+  local value = nil
+  for i, arg in ipairs(cmd) do
+    if arg == flag then
+      value = cmd[i + 1]
+    end
+  end
+  return value
 end
 
 local function test_pi_edit_uses_vim_system_command()
@@ -391,11 +409,6 @@ local function test_session_qa_opens_terminal_without_rpc_or_sessionless_flags()
   setup_test_env()
   setup_buffer({ "code" }, "/test/session.lua")
   local terminal = mock_terminal()
-  child.lua([[
-    vim.ui.input = function(_, callback)
-      callback("talk")
-    end
-  ]])
 
   child.cmd("PiSessionQA")
 
@@ -404,19 +417,22 @@ local function test_session_qa_opens_terminal_without_rpc_or_sessionless_flags()
   MiniTest.expect.equality(cmd[1], "pi")
   MiniTest.expect.equality(has_arg(cmd, "--mode"), nil)
   MiniTest.expect.equality(has_arg(cmd, "--no-session"), nil)
+  MiniTest.expect.no_equality(has_arg(cmd, "--continue"), nil)
+  MiniTest.expect.no_equality(arg_after(cmd, "--session-dir"), nil)
   MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,bash,web_search,web_fetch")
-  MiniTest.expect.no_equality(terminal.get_sent():match("Context:"), nil)
+  MiniTest.expect.equality(terminal.get_sent(), "")
+
+  local context_path = last_arg_after(cmd, "--append-system-prompt")
+  local context_text = child.lua_get(string.format([[table.concat(vim.fn.readfile(%q), "\n")]], context_path))
+  MiniTest.expect.no_equality(context_text:match("Neovim workspace context"), nil)
+  MiniTest.expect.no_equality(context_text:match("File: /test/session.lua"), nil)
+  MiniTest.expect.no_equality(context_text:match("code"), nil)
 end
 
 local function test_session_keeps_tools_enabled()
   setup_test_env()
   setup_buffer({ "code" }, "/test/session-edit.lua")
   local terminal = mock_terminal()
-  child.lua([[
-    vim.ui.input = function(_, callback)
-      callback("edit")
-    end
-  ]])
 
   child.cmd("PiSession")
 
@@ -425,6 +441,31 @@ local function test_session_keeps_tools_enabled()
   MiniTest.expect.equality(has_arg(cmd, "--no-session"), nil)
   MiniTest.expect.equality(has_arg(cmd, "--no-tools"), nil)
   MiniTest.expect.equality(has_arg(cmd, "--tools"), nil)
+  MiniTest.expect.no_equality(has_arg(cmd, "--continue"), nil)
+  MiniTest.expect.equality(terminal.get_sent(), "")
+end
+
+local function test_session_context_includes_open_buffers()
+  setup_test_env()
+  setup_buffer({ "current buffer" }, "/test/current.lua")
+  child.lua([[
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/test/other.lua")
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "other buffer" })
+    vim.bo[buf].modified = true
+  ]])
+  local terminal = mock_terminal()
+
+  child.cmd("PiSession")
+
+  local cmd = terminal.get_cmd()
+  local context_path = last_arg_after(cmd, "--append-system-prompt")
+  local context_text = child.lua_get(string.format([[table.concat(vim.fn.readfile(%q), "\n")]], context_path))
+  MiniTest.expect.no_equality(context_text:match("Current file: /test/current.lua"), nil)
+  MiniTest.expect.no_equality(context_text:match("/test/current.lua %(current"), nil)
+  MiniTest.expect.no_equality(context_text:match("/test/other.lua %(modified"), nil)
+  MiniTest.expect.no_equality(context_text:match("current buffer"), nil)
+  MiniTest.expect.no_equality(context_text:match("other buffer"), nil)
 end
 
 local function test_chunked_stdout_updates_and_success_notifies_done()
@@ -770,6 +811,44 @@ local function test_history_commands_open_markdown_buffers()
   MiniTest.expect.equality(child.bo.filetype, "markdown")
 end
 
+local function test_prompt_popup_submits_multiline_prompt()
+  setup_test_env()
+  child.lua([[require("pi.config").get().prompt.popup = true]])
+  setup_buffer({ "code" }, "/test/prompt-popup.lua")
+  local system = mock_system()
+
+  child.cmd("PiQuestion")
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "line one", "line two" })]])
+  child.cmd("stopinsert")
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<C-s>", true, false, true), "xt")]])
+  flush()
+
+  local prompt = decode_prompt(system.get_stdin())
+  MiniTest.expect.no_equality(prompt.message:match("line one\nline two"), nil)
+  MiniTest.expect.equality(arg_after(system.get_cmd(), "--tools"), "read,grep,find,ls,web_search,web_fetch")
+end
+
+local function test_prompt_popup_rewrites_prompt_with_ai()
+  setup_test_env()
+  child.lua([[require("pi.config").get().prompt.popup = true; require("pi.config").get().prompt.rewrite_key = "<Space>r"]])
+  setup_buffer({ "code" }, "/test/prompt-rewrite.lua")
+  local system = mock_system()
+
+  child.cmd("PiQuestion")
+  child.cmd("stopinsert")
+  child.lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "fix this maybe" })]])
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
+  flush()
+
+  MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--no-tools"), nil)
+  system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Fix the selected code while preserving behavior."}}\n')
+  system.stdout('{"type":"agent_end"}\n')
+  system.exit(0, 0)
+
+  local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.equality(text, "Fix the selected code while preserving behavior.")
+end
+
 local T = MiniTest.new_set()
 
 T["PiEdit"] = MiniTest.new_set()
@@ -804,10 +883,15 @@ T["PiResearch"]["allows read/search/bash/web tools"] = test_research_allows_read
 T["PiSession"] = MiniTest.new_set()
 T["PiSession"]["QA opens terminal without rpc or sessionless flags"] = test_session_qa_opens_terminal_without_rpc_or_sessionless_flags
 T["PiSession"]["keeps tools enabled"] = test_session_keeps_tools_enabled
+T["PiSession"]["context includes open buffers"] = test_session_context_includes_open_buffers
 
 T["PiHistory"] = MiniTest.new_set()
 T["PiHistory"]["saves request and answer for RPC commands"] = test_history_saves_request_and_answer_for_rpc_commands
 T["PiHistory"]["commands open markdown buffers"] = test_history_commands_open_markdown_buffers
+
+T["PromptEditor"] = MiniTest.new_set()
+T["PromptEditor"]["submits multiline prompt"] = test_prompt_popup_submits_multiline_prompt
+T["PromptEditor"]["rewrites prompt with ai"] = test_prompt_popup_rewrites_prompt_with_ai
 
 T["Commands"] = MiniTest.new_set()
 T["Commands"]["removed selection-specific commands are absent"] = test_removed_selection_commands_are_not_registered

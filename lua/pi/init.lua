@@ -5,11 +5,13 @@ local session_mod = require("pi.session")
 local ui = require("pi.ui")
 local log = require("pi.log")
 local history = require("pi.history")
+local prompt_editor = require("pi.prompt_editor")
 
 local M = {}
 
 local active_session = nil
 local last_session = nil
+local rewrite_process = nil
 local warned_extensions_disabled_for_web_tools = false
 
 local QA_TOOLS = { "read", "grep", "find", "ls", "web_search", "web_fetch" }
@@ -58,12 +60,22 @@ end
 
 local function add_common_cli_flags(cmd, cfg, opts)
   opts = opts or {}
+  if opts.no_tools then
+    table.insert(cmd, "--no-tools")
+  end
   if opts.tools then
     table.insert(cmd, "--tools")
     table.insert(cmd, table.concat(opts.tools, ","))
   end
   if opts.rpc and opts.no_session ~= false then
     table.insert(cmd, "--no-session")
+  end
+  if opts.continue_session then
+    table.insert(cmd, "--continue")
+  end
+  if opts.session_dir then
+    table.insert(cmd, "--session-dir")
+    table.insert(cmd, opts.session_dir)
   end
   if not cfg.extensions then
     table.insert(cmd, "--no-extensions")
@@ -89,6 +101,10 @@ local function add_common_cli_flags(cmd, cfg, opts)
   end
   table.insert(cmd, "--append-system-prompt")
   table.insert(cmd, build_append_system_prompt(cfg, opts.prompt))
+  if opts.extra_append_system_prompt then
+    table.insert(cmd, "--append-system-prompt")
+    table.insert(cmd, opts.extra_append_system_prompt)
+  end
 end
 
 local warn_if_web_tools_need_extensions
@@ -111,6 +127,100 @@ local function prompt_payload(message, built_context)
   return message .. "\n\nContext:\n" .. built_context
 end
 
+local REWRITE_PROMPT = [[Rewrite the following user prompt into a clearer, more actionable coding-agent instruction.
+
+Rules:
+- Preserve the user's intent.
+- Do not add new requirements.
+- Make ambiguity explicit as assumptions.
+- Keep the result concise.
+- Return only the improved prompt.
+
+User prompt:
+]]
+
+local function rewrite_payload(text)
+  return vim.json.encode({
+    type = "prompt",
+    message = REWRITE_PROMPT .. text,
+  }) .. "\n"
+end
+
+local function rewrite_prompt(text, on_done, on_finish)
+  if rewrite_process and not rewrite_process:is_closing() then
+    vim.notify("pi prompt rewrite is already running", vim.log.levels.WARN)
+    if on_finish then
+      on_finish()
+    end
+    return
+  end
+
+  local state = { stdout_tail = "", answer = "", saw_done = false }
+  local cmd = get_pi_cmd({ no_tools = true, prompt = "question" })
+  local ok, process = pcall(vim.system, cmd, {
+    text = true,
+    stdin = true,
+    stdout = vim.schedule_wrap(function(err, data)
+      if err or not data then
+        return
+      end
+      state.stdout_tail = state.stdout_tail .. data
+      while true do
+        local newline = state.stdout_tail:find("\n", 1, true)
+        if not newline then
+          break
+        end
+        local line = state.stdout_tail:sub(1, newline - 1)
+        state.stdout_tail = state.stdout_tail:sub(newline + 1)
+        if line ~= "" then
+          local decoded_ok, event = pcall(vim.json.decode, line)
+          if decoded_ok and event then
+            if event.type == "message_update" then
+              local delta = event.assistantMessageEvent
+              if delta and delta.type == "text_delta" then
+                state.answer = state.answer .. (delta.delta or "")
+              end
+            elseif event.type == "agent_end" then
+              state.saw_done = true
+            elseif event.type == "response" and event.success == false then
+              vim.notify("pi prompt rewrite failed: " .. tostring(event.error or "unknown error"), vim.log.levels.ERROR)
+            end
+          end
+        end
+      end
+    end),
+  }, vim.schedule_wrap(function(result)
+    rewrite_process = nil
+    if result.code == 0 and state.answer ~= "" then
+      on_done(vim.trim(state.answer))
+    elseif result.code ~= 0 then
+      vim.notify("pi prompt rewrite exited with code " .. result.code, vim.log.levels.ERROR)
+    elseif state.answer == "" then
+      vim.notify("pi prompt rewrite produced no text", vim.log.levels.WARN)
+    end
+    if on_finish then
+      on_finish()
+    end
+  end))
+
+  if not ok then
+    vim.notify("pi prompt rewrite failed: " .. tostring(process), vim.log.levels.ERROR)
+    if on_finish then
+      on_finish()
+    end
+    return
+  end
+
+  rewrite_process = process
+  process:write(rewrite_payload(text))
+  local stdin = process._state and process._state.stdin
+  if stdin then
+    pcall(function()
+      stdin:close()
+    end)
+  end
+end
+
 local function explicit_range(command_opts)
   if command_opts and command_opts.range and command_opts.range > 0 then
     return { start = command_opts.line1, ["end"] = command_opts.line2 }
@@ -123,6 +233,42 @@ local function build_context_for_range(bufnr, range)
     return context.get_visual_context(bufnr, config.get(), range)
   end
   return context.get_buffer_context(bufnr, config.get())
+end
+
+local function build_workspace_context_for_range(bufnr, range)
+  return context.get_workspace_context(bufnr, config.get(), range)
+end
+
+local function workspace_id(cwd)
+  if vim.fn.exists("*sha256") == 1 then
+    return vim.fn.fnamemodify(cwd, ":t") .. "-" .. vim.fn.sha256(cwd):sub(1, 16)
+  end
+  local sanitized = cwd:gsub("[^%w_.-]", "-"):gsub("-+", "-")
+  return sanitized:sub(1, 80)
+end
+
+local function workspace_session_dir(cfg)
+  local session_config = cfg.session or {}
+  if session_config.scope == "global" then
+    return nil
+  end
+  local dir = vim.fn.stdpath("data") .. "/pi.nvim/sessions/" .. workspace_id(vim.fn.getcwd())
+  vim.fn.mkdir(dir, "p")
+  return dir
+end
+
+local function write_session_context_file(built_context)
+  local dir = vim.fn.stdpath("data") .. "/pi.nvim/session-context"
+  vim.fn.mkdir(dir, "p")
+  local path = dir .. "/" .. workspace_id(vim.fn.getcwd()) .. ".md"
+  local lines = {
+    "Current Neovim workspace context for this TUI session.",
+    "Use this context as source of truth for open buffers. Do not display it back unless the user asks.",
+    "",
+  }
+  vim.list_extend(lines, vim.split(built_context, "\n", { plain = true }))
+  vim.fn.writefile(lines, path)
+  return path
 end
 
 local function tools_include_web(tools)
@@ -374,23 +520,41 @@ local function start_session(message, build_context, opts)
   session.process = process
 end
 
-local function start_terminal_session(message, build_context, opts)
+local function start_terminal_session(build_context, opts)
   opts = opts or {}
   local mode_config = MODE_CONFIGS[opts.mode or "session"] or MODE_CONFIGS.session
-  if not message or message == "" then
-    vim.notify("No message provided", vim.log.levels.ERROR)
-    return
+  local cfg = config.get()
+  local session_config = cfg.session or {}
+  local extra_append_system_prompt = nil
+
+  if session_config.inject_context ~= false then
+    local ok, built_context = pcall(build_context)
+    if not ok then
+      vim.notify(tostring(built_context), vim.log.levels.ERROR)
+      return
+    end
+    extra_append_system_prompt = write_session_context_file(built_context)
   end
 
-  local ok, built_context = pcall(build_context)
-  if not ok then
-    vim.notify(tostring(built_context), vim.log.levels.ERROR)
-    return
+  local cmd = get_pi_cmd({
+    rpc = false,
+    prompt = mode_config.prompt,
+    tools = mode_config.tools,
+    continue_session = session_config.continue ~= false,
+    session_dir = workspace_session_dir(cfg),
+    extra_append_system_prompt = extra_append_system_prompt,
+  })
+  local width = session_config.width or 0.35
+  if type(width) == "number" and width > 0 and width < 1 then
+    width = math.floor(vim.o.columns * width)
   end
+  width = math.floor(width or math.floor(vim.o.columns * 0.35))
 
-  local cmd = get_pi_cmd({ rpc = false, prompt = mode_config.prompt, tools = mode_config.tools })
-  vim.cmd("botright split")
-  vim.cmd("resize 15")
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_open_win(bufnr, true, {
+    split = session_config.split or "right",
+    width = width,
+  })
 
   local job_id = vim.fn.termopen(cmd)
   if job_id <= 0 then
@@ -400,7 +564,6 @@ local function start_terminal_session(message, build_context, opts)
 
   vim.bo.bufhidden = "hide"
   vim.bo.swapfile = false
-  vim.fn.chansend(job_id, prompt_payload(message, built_context) .. "\n")
   vim.cmd("startinsert")
 end
 
@@ -411,11 +574,26 @@ local function prompt_for_command(command_name, command_opts, callback)
   end
 
   local range = explicit_range(command_opts)
+  local function build_context()
+    return build_context_for_range(bufnr, range)
+  end
+  local cfg = config.get()
+  if cfg.prompt and cfg.prompt.popup ~= false then
+    prompt_editor.open({
+      title = command_name,
+      config = cfg.prompt,
+      initial = "",
+      on_submit = function(input)
+        callback(input, build_context, range)
+      end,
+      on_rewrite = cfg.prompt.ai_rewrite ~= false and rewrite_prompt or nil,
+    })
+    return
+  end
+
   vim.ui.input({ prompt = context.format_prompt_label(bufnr, range) }, function(input)
     if input then
-      callback(input, function()
-        return build_context_for_range(bufnr, range)
-      end, range)
+      callback(input, build_context, range)
     end
   end)
 end
@@ -456,9 +634,14 @@ end
 
 function M.session(command_opts)
   assert_supported_version()
-  prompt_for_command("PiSession", command_opts, function(input, build_context)
-    start_terminal_session(input, build_context, { mode = "session" })
-  end)
+  local bufnr = ensure_file_backed_buffer("PiSession")
+  if not bufnr then
+    return
+  end
+  local range = explicit_range(command_opts)
+  start_terminal_session(function()
+    return build_workspace_context_for_range(bufnr, range)
+  end, { mode = "session", range = range })
 end
 
 function M.session_edit(command_opts)
@@ -471,9 +654,14 @@ end
 
 function M.session_qa(command_opts)
   assert_supported_version()
-  prompt_for_command("PiSessionQA", command_opts, function(input, build_context)
-    start_terminal_session(input, build_context, { mode = "session_qa" })
-  end)
+  local bufnr = ensure_file_backed_buffer("PiSessionQA")
+  if not bufnr then
+    return
+  end
+  local range = explicit_range(command_opts)
+  start_terminal_session(function()
+    return build_workspace_context_for_range(bufnr, range)
+  end, { mode = "session_qa", range = range })
 end
 
 function M.session_question_selection(command_opts)

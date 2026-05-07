@@ -69,6 +69,26 @@ require("pi").setup({
       surrounding_lines = 40,
     },
   },
+  prompt = {
+    popup = true,
+    ai_rewrite = true,
+    width = 0.65,
+    height = 0.35,
+    send_key = "<C-s>",
+    send_normal_key = "<leader><CR>",
+    rewrite_key = "<leader>r",
+    cancel_key = "q",
+  },
+  session = {
+    split = "right",
+    width = 0.35,
+    continue = true,
+    scope = "cwd",
+    inject_context = true,
+    include_open_buffers = true,
+    max_buffer_bytes = 12000,
+    max_total_context_bytes = 60000,
+  },
   skills = true,
   extensions = true,
 })
@@ -84,6 +104,22 @@ require("pi").setup({
 | `context.max_bytes` | `24000` | Maximum size in bytes for sent context before trimming. |
 | `context.ask.surrounding_lines` | `80` | Number of lines before and after the current cursor line to include for `:PiEdit` and other buffer-context commands. |
 | `context.selection.surrounding_lines` | `40` | Number of lines before and after the current visual selection to include for selection/range context. |
+| `prompt.popup` | `true` | Use a real editable popup buffer instead of one-line `vim.ui.input` for non-session prompts. |
+| `prompt.ai_rewrite` | `true` | Enable AI prompt rewrite inside the prompt popup. |
+| `prompt.width` | `0.65` | Prompt popup width as ratio or absolute columns. |
+| `prompt.height` | `0.35` | Prompt popup height as ratio or absolute rows. |
+| `prompt.send_key` | `"<C-s>"` | Insert/normal mode key to send the prompt. |
+| `prompt.send_normal_key` | `"<leader><CR>"` | Normal mode key to send the prompt. |
+| `prompt.rewrite_key` | `"<leader>r"` | Normal/visual mode key to AI-rewrite the prompt. Uses your configured `<leader>` (space if `vim.g.mapleader = " "`). |
+| `prompt.cancel_key` | `"q"` | Normal mode key to close the prompt popup without sending. |
+| `session.split` | `"right"` | Side used for the pi TUI window. |
+| `session.width` | `0.35` | Session window width as ratio or absolute columns. |
+| `session.continue` | `true` | Start session commands with `--continue` so pi reconnects to the previous workspace session. |
+| `session.scope` | `"cwd"` | Use a workspace-specific `--session-dir` for session commands. Set to `"global"` to use pi's default session lookup. |
+| `session.inject_context` | `true` | Append Neovim context to the session system prompt instead of pasting it into the TUI input. |
+| `session.include_open_buffers` | `true` | Include all loaded file-backed buffers (LazyVim bufferline tabs) in session context. |
+| `session.max_buffer_bytes` | `12000` | Maximum bytes included for each open buffer in session context. |
+| `session.max_total_context_bytes` | `60000` | Maximum total bytes for hidden session context. |
 | `skills` | `true` | Whether pi discovers and loads skills. Set to `false` to pass `--no-skills`. |
 | `extensions` | `true` | Whether pi discovers and loads extensions. Set to `false` to pass `--no-extensions`. |
 
@@ -150,9 +186,11 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 
 - Runs asynchronously and keeps editing nonblocking.
 - Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
-- `:PiQuestion` and `:PiResearch` stream answers into a markdown popup.
+- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup. Use normal/insert/visual mode freely, `<C-s>` or `<leader><CR>` to send, `<leader>r` to AI-rewrite, and `q` in normal mode to cancel.
+- `:PiQuestion` and `:PiResearch` stream answers into a markdown popup after you send the prompt.
 - `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
-- `:PiSession` and `:PiSessionQA` open pi in a terminal split without RPC or `--no-session`, preserving full pi session compatibility.
+- `:PiSession` and `:PiSessionQA` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.
+- Session context includes the current buffer, visual range metadata when invoked from visual mode, and all loaded file-backed buffers (the buffers shown as LazyVim tabs). Modified buffers are marked so unsaved changes remain source of truth.
 - Web tools require the `pi-search` extension and `extensions = true`. If extensions are disabled, pi.nvim warns and still passes the configured tool allowlist.
 - Uses `nvim-notify` for status updates when available; otherwise falls back to a small floating status window.
 - Reloads changed loaded buffers on success so pi's on-disk edits are reflected in Neovim.
