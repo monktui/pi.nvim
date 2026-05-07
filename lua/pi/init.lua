@@ -4,11 +4,24 @@ local runner = require("pi.runner")
 local session_mod = require("pi.session")
 local ui = require("pi.ui")
 local log = require("pi.log")
+local history = require("pi.history")
 
 local M = {}
 
 local active_session = nil
 local last_session = nil
+local warned_extensions_disabled_for_web_tools = false
+
+local QA_TOOLS = { "read", "grep", "find", "ls", "web_search", "web_fetch" }
+local RESEARCH_TOOLS = { "read", "grep", "find", "ls", "bash", "web_search", "web_fetch" }
+
+local MODE_CONFIGS = {
+  edit = { command = "PiEdit", prompt = "edit", auto_answer = false },
+  question = { command = "PiQuestion", prompt = "question", auto_answer = true, tools = QA_TOOLS },
+  research = { command = "PiResearch", prompt = "research", auto_answer = true, tools = RESEARCH_TOOLS },
+  session = { command = "PiSession", prompt = "edit" },
+  session_qa = { command = "PiSessionQA", prompt = "research", tools = RESEARCH_TOOLS },
+}
 
 local function assert_supported_version()
   if vim.fn.has("nvim-0.10") == 0 then
@@ -25,17 +38,33 @@ local function ensure_file_backed_buffer(command_name)
   return bufnr
 end
 
-local function build_append_system_prompt(cfg)
-  local prompts = { context.get_system_prompt() }
+local function system_prompt_for(prompt_kind)
+  if prompt_kind == "question" then
+    return context.get_question_system_prompt()
+  end
+  if prompt_kind == "research" then
+    return context.get_research_system_prompt()
+  end
+  return context.get_edit_system_prompt()
+end
+
+local function build_append_system_prompt(cfg, prompt_kind)
+  local prompts = { system_prompt_for(prompt_kind) }
   if cfg.append_system_prompt and cfg.append_system_prompt ~= "" then
     table.insert(prompts, cfg.append_system_prompt)
   end
   return table.concat(prompts, "\n\n")
 end
 
-local function get_pi_cmd()
-  local cfg = config.get()
-  local cmd = { "pi", "--mode", "rpc", "--no-session" }
+local function add_common_cli_flags(cmd, cfg, opts)
+  opts = opts or {}
+  if opts.tools then
+    table.insert(cmd, "--tools")
+    table.insert(cmd, table.concat(opts.tools, ","))
+  end
+  if opts.rpc and opts.no_session ~= false then
+    table.insert(cmd, "--no-session")
+  end
   if not cfg.extensions then
     table.insert(cmd, "--no-extensions")
   end
@@ -59,8 +88,61 @@ local function get_pi_cmd()
     table.insert(cmd, cfg.system_prompt)
   end
   table.insert(cmd, "--append-system-prompt")
-  table.insert(cmd, build_append_system_prompt(cfg))
+  table.insert(cmd, build_append_system_prompt(cfg, opts.prompt))
+end
+
+local warn_if_web_tools_need_extensions
+
+local function get_pi_cmd(opts)
+  local cfg = config.get()
+  opts = opts or {}
+  warn_if_web_tools_need_extensions(cfg, opts.tools)
+  local cmd = { "pi" }
+  if opts.rpc ~= false then
+    table.insert(cmd, "--mode")
+    table.insert(cmd, "rpc")
+    opts.rpc = true
+  end
+  add_common_cli_flags(cmd, cfg, opts)
   return cmd
+end
+
+local function prompt_payload(message, built_context)
+  return message .. "\n\nContext:\n" .. built_context
+end
+
+local function explicit_range(command_opts)
+  if command_opts and command_opts.range and command_opts.range > 0 then
+    return { start = command_opts.line1, ["end"] = command_opts.line2 }
+  end
+  return nil
+end
+
+local function build_context_for_range(bufnr, range)
+  if range then
+    return context.get_visual_context(bufnr, config.get(), range)
+  end
+  return context.get_buffer_context(bufnr, config.get())
+end
+
+local function tools_include_web(tools)
+  if not tools then
+    return false
+  end
+  for _, tool in ipairs(tools) do
+    if tool == "web_search" or tool == "web_fetch" then
+      return true
+    end
+  end
+  return false
+end
+
+warn_if_web_tools_need_extensions = function(cfg, tools)
+  if cfg.extensions or warned_extensions_disabled_for_web_tools or not tools_include_web(tools) then
+    return
+  end
+  warned_extensions_disabled_for_web_tools = true
+  vim.notify("pi.nvim: web_search/web_fetch require extensions = true and pi-search", vim.log.levels.WARN)
 end
 
 local function set_status(session, status, message)
@@ -175,10 +257,15 @@ local function finish_session(session, status, opts)
   end
   last_session = session
 
+  if session.is_rpc then
+    history.append(session, status)
+  end
   log.append_session(nil, session, session.last_message, status, session.source_path)
 end
 
-local function start_session(message, build_context)
+local function start_session(message, build_context, opts)
+  opts = opts or {}
+  local mode_config = MODE_CONFIGS[opts.mode or "edit"] or MODE_CONFIGS.edit
   if active_session then
     vim.notify("pi is already running, please wait", vim.log.levels.WARN)
     return
@@ -193,9 +280,18 @@ local function start_session(message, build_context)
   local session = session_mod.new(source_bufnr)
   session.file_snapshots = snapshot_loaded_file_buffers()
   session.last_message = message
+  session.is_rpc = true
+  session.command_name = mode_config.command
+  session.mode = opts.mode or "edit"
+  session.context_range = opts.range
+  session.cwd = vim.fn.getcwd()
   active_session = session
   last_session = session
-  ui.open(session)
+  if mode_config.auto_answer then
+    ui.open_answer(session)
+  else
+    ui.open(session)
+  end
   set_status(session, "collecting_context")
 
   local ok, built_context = pcall(build_context)
@@ -206,12 +302,12 @@ local function start_session(message, build_context)
 
   local payload = vim.json.encode({
     type = "prompt",
-    message = message .. "\n\nContext:\n" .. built_context,
+    message = prompt_payload(message, built_context),
   }) .. "\n"
 
   set_status(session, "starting")
 
-  local process, err = runner.start(session, get_pi_cmd(), payload, {
+  local process, err = runner.start(session, get_pi_cmd({ prompt = mode_config.prompt, tools = mode_config.tools }), payload, {
     on_event = function(event)
       if not active_session or active_session ~= session or session.cancelled then
         return
@@ -224,6 +320,12 @@ local function start_session(message, build_context)
       elseif event.type == "tool_end" then
         session.active_tool = nil
         set_status(session, "thinking")
+      elseif event.type == "text" then
+        if mode_config.auto_answer then
+          ui.append_answer(session, event.text)
+        else
+          session.answer = (session.answer or "") .. (event.text or "")
+        end
       elseif event.type == "done" then
         session.saw_terminal_event = true
         finish_session(session, "done")
@@ -272,42 +374,122 @@ local function start_session(message, build_context)
   session.process = process
 end
 
+local function start_terminal_session(message, build_context, opts)
+  opts = opts or {}
+  local mode_config = MODE_CONFIGS[opts.mode or "session"] or MODE_CONFIGS.session
+  if not message or message == "" then
+    vim.notify("No message provided", vim.log.levels.ERROR)
+    return
+  end
+
+  local ok, built_context = pcall(build_context)
+  if not ok then
+    vim.notify(tostring(built_context), vim.log.levels.ERROR)
+    return
+  end
+
+  local cmd = get_pi_cmd({ rpc = false, prompt = mode_config.prompt, tools = mode_config.tools })
+  vim.cmd("botright split")
+  vim.cmd("resize 15")
+
+  local job_id = vim.fn.termopen(cmd)
+  if job_id <= 0 then
+    vim.notify("Failed to start pi terminal session", vim.log.levels.ERROR)
+    return
+  end
+
+  vim.bo.bufhidden = "hide"
+  vim.bo.swapfile = false
+  vim.fn.chansend(job_id, prompt_payload(message, built_context) .. "\n")
+  vim.cmd("startinsert")
+end
+
+local function prompt_for_command(command_name, command_opts, callback)
+  local bufnr = ensure_file_backed_buffer(command_name)
+  if not bufnr then
+    return
+  end
+
+  local range = explicit_range(command_opts)
+  vim.ui.input({ prompt = context.format_prompt_label(bufnr, range) }, function(input)
+    if input then
+      callback(input, function()
+        return build_context_for_range(bufnr, range)
+      end, range)
+    end
+  end)
+end
+
 function M.setup(opts)
   assert_supported_version()
   config.setup(opts)
 end
 
-function M.prompt_with_buffer()
+function M.edit(command_opts)
   assert_supported_version()
-  local bufnr = ensure_file_backed_buffer("PiAsk")
-  if not bufnr then
-    return
-  end
-
-  vim.ui.input({ prompt = context.format_prompt_label(bufnr, nil) }, function(input)
-    if input then
-      start_session(input, function()
-        return context.get_buffer_context(bufnr, config.get())
-      end)
-    end
+  prompt_for_command("PiEdit", command_opts, function(input, build_context, range)
+    start_session(input, build_context, { mode = "edit", range = range })
   end)
 end
 
-function M.prompt_with_selection()
-  assert_supported_version()
-  local bufnr = ensure_file_backed_buffer("PiAskSelection")
-  if not bufnr then
-    return
-  end
+function M.edit_selection(command_opts)
+  return M.edit(command_opts)
+end
 
-  local range = context.get_visual_selection_range()
-  vim.ui.input({ prompt = context.format_prompt_label(bufnr, range) }, function(input)
-    if input then
-      start_session(input, function()
-        return context.get_visual_context(bufnr, config.get())
-      end)
-    end
+function M.question(command_opts)
+  assert_supported_version()
+  prompt_for_command("PiQuestion", command_opts, function(input, build_context, range)
+    start_session(input, build_context, { mode = "question", range = range })
   end)
+end
+
+function M.question_selection(command_opts)
+  return M.question(command_opts)
+end
+
+function M.research(command_opts)
+  assert_supported_version()
+  prompt_for_command("PiResearch", command_opts, function(input, build_context, range)
+    start_session(input, build_context, { mode = "research", range = range })
+  end)
+end
+
+function M.session(command_opts)
+  assert_supported_version()
+  prompt_for_command("PiSession", command_opts, function(input, build_context)
+    start_terminal_session(input, build_context, { mode = "session" })
+  end)
+end
+
+function M.session_edit(command_opts)
+  return M.session(command_opts)
+end
+
+function M.session_edit_selection(command_opts)
+  return M.session(command_opts)
+end
+
+function M.session_qa(command_opts)
+  assert_supported_version()
+  prompt_for_command("PiSessionQA", command_opts, function(input, build_context)
+    start_terminal_session(input, build_context, { mode = "session_qa" })
+  end)
+end
+
+function M.session_question_selection(command_opts)
+  return M.session_qa(command_opts)
+end
+
+function M.session_question(command_opts)
+  return M.session_qa(command_opts)
+end
+
+function M.prompt_with_buffer(command_opts)
+  return M.edit(command_opts)
+end
+
+function M.prompt_with_selection(command_opts)
+  return M.edit(command_opts)
 end
 
 function M.cancel()
@@ -348,6 +530,14 @@ function M.show_log()
   vim.bo.buftype = "nofile"
   vim.bo.filetype = "log"
   vim.cmd("normal! G")
+end
+
+function M.show_history()
+  history.show()
+end
+
+function M.show_last_history()
+  history.show_last()
 end
 
 function M.get_buffer_context()

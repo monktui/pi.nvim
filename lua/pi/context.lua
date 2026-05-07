@@ -1,8 +1,12 @@
 local M = {}
 
-local SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin. The user has sent a request and will not be able to reply back. You must complete the task immediately without asking any questions or requesting clarification. Take action now and do what was asked.
+local EDIT_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin. The user has sent an edit request and will not be able to reply back. You must complete the task immediately without asking any questions or requesting clarification. Take action now and do what was asked.
 
 IMPORTANT: Any file content included in the provided Context comes from the user's current Neovim buffer and may be newer than the on-disk file. Treat the provided Context as the source of truth for that file content. Do not read the same file just to verify its contents before editing, because the filesystem copy may be stale if the user has unsaved changes. Base edits on the provided buffer/selection content whenever possible.]]
+
+local QUESTION_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin in question-answering mode. Answer the user's question using the provided Context and read/search/web tools when useful. Do not edit, write, or mutate files. If the context is insufficient, inspect relevant files instead of guessing. If you use web tools, cite the URLs you used.]]
+
+local RESEARCH_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin in research mode. Investigate and report findings using the provided Context plus read/search/bash/web tools when useful. Do not edit, write, or mutate files, and do not run destructive shell commands. Prefer concise evidence-backed findings and cite URLs when web tools are used.]]
 
 local BUFFER_SOURCE_OF_TRUTH_NOTE = [[NOTE: The context below comes from the current Neovim buffer and may include unsaved changes that are newer than the on-disk file. Treat this context as the source of truth for the file content, and do not read the same file only to confirm its current contents before editing.]]
 
@@ -81,7 +85,19 @@ local function content_block(label, text)
 end
 
 function M.get_system_prompt()
-  return SYSTEM_PROMPT
+  return EDIT_SYSTEM_PROMPT
+end
+
+function M.get_edit_system_prompt()
+  return EDIT_SYSTEM_PROMPT
+end
+
+function M.get_question_system_prompt()
+  return QUESTION_SYSTEM_PROMPT
+end
+
+function M.get_research_system_prompt()
+  return RESEARCH_SYSTEM_PROMPT
 end
 
 function M.get_buffer_context(bufnr, config)
@@ -115,10 +131,10 @@ function M.get_buffer_context(bufnr, config)
   return table.concat(parts, "\n\n")
 end
 
-function M.get_visual_context(bufnr, config)
+function M.get_visual_context(bufnr, config, selection_range)
   local filename = vim.api.nvim_buf_get_name(bufnr)
   local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local selection_range = M.get_visual_selection_range() or { start = 1, ["end"] = #all_lines }
+  selection_range = selection_range or M.get_visual_selection_range() or { start = 1, ["end"] = #all_lines }
   local surrounding_lines = config.context.selection.surrounding_lines
   local before = math.max(1, selection_range.start - surrounding_lines)
   local after = math.min(#all_lines, selection_range["end"] + surrounding_lines)

@@ -82,8 +82,8 @@ require("pi").setup({
 | `system_prompt` | `nil` | Passes a custom system prompt to pi (`--system-prompt`). Use with care, since this overrides pi's generated baseline instructions. |
 | `append_system_prompt` | `nil` | Appends text to the system prompt (`--append-system-prompt`). pi.nvim always appends its non-interactive execution instruction, and this option is concatenated after it. |
 | `context.max_bytes` | `24000` | Maximum size in bytes for sent context before trimming. |
-| `context.ask.surrounding_lines` | `80` | Number of lines before and after the current cursor line to include for `:PiAsk`. |
-| `context.selection.surrounding_lines` | `40` | Number of lines before and after the current visual selection to include for `:PiAskSelection`. |
+| `context.ask.surrounding_lines` | `80` | Number of lines before and after the current cursor line to include for `:PiEdit` and other buffer-context commands. |
+| `context.selection.surrounding_lines` | `40` | Number of lines before and after the current visual selection to include for selection/range context. |
 | `skills` | `true` | Whether pi discovers and loads skills. Set to `false` to pass `--no-skills`. |
 | `extensions` | `true` | Whether pi discovers and loads extensions. Set to `false` to pass `--no-extensions`. |
 
@@ -116,27 +116,44 @@ Run `pi --list-models` to see available options.
 No keymaps by default. You choose.
 
 ```lua
--- Ask pi with the current buffer as context
-vim.keymap.set("n", "<leader>ai", ":PiAsk<CR>", { desc = "Ask pi" })
+-- Ask pi to edit with current buffer or selected range as context
+vim.keymap.set({ "n", "v" }, "<leader>ae", ":PiEdit<CR>", { desc = "Pi edit" })
 
--- Ask pi with visual selection as context
-vim.keymap.set("v", "<leader>ai", ":PiAskSelection<CR>", { desc = "Ask pi (selection)" })
+-- Ask pi a read-only question with current buffer or selected range as context
+vim.keymap.set({ "n", "v" }, "<leader>aq", ":PiQuestion<CR>", { desc = "Pi question" })
+
+-- Ask pi to do deeper read-only research
+vim.keymap.set({ "n", "v" }, "<leader>ar", ":PiResearch<CR>", { desc = "Pi research" })
+
+-- Open full pi terminal sessions
+vim.keymap.set({ "n", "v" }, "<leader>as", ":PiSession<CR>", { desc = "Pi session" })
+vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA session" })
 ```
 
 ## Usage
 
 ### Commands
 
-| Command | Mode | Description |
-|---------|------|-------------|
-| `:PiAsk` | Normal | Prompt for input, sends it + current buffer as context |
-| `:PiAskSelection` | Visual | Same as :PiAsk but also sends selected lines as context |
-| `:PiCancel` | Normal | Cancel the active pi request immediately |
-| `:PiLog` | Normal | Open the session log in a new split |
+| Command | Backend | Tools | Description |
+|---------|---------|-------|-------------|
+| `:PiEdit` | RPC | Full pi tools | Prompt for an edit request using selected lines when invoked with a range, otherwise buffer context |
+| `:PiQuestion` | RPC | `read,grep,find,ls,web_search,web_fetch` | Quick read-only Q&A with repo/web lookup |
+| `:PiResearch` | RPC | `read,grep,find,ls,bash,web_search,web_fetch` | Deeper read-only investigation and reporting |
+| `:PiSession` | Terminal | Full pi tools | Open a full interactive pi coding session |
+| `:PiSessionQA` | Terminal | `read,grep,find,ls,bash,web_search,web_fetch` | Open a full interactive QA/research session |
+| `:PiHistory` | Local | n/a | Open request/answer history for non-terminal commands |
+| `:PiHistoryLast` | Local | n/a | Open latest request/answer history entry |
+| `:PiCancel` | Local | n/a | Cancel the active RPC request immediately |
+| `:PiLog` | Local | n/a | Open the technical session log in a new split |
 
 ## Behavior
 
 - Runs asynchronously and keeps editing nonblocking.
+- Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
+- `:PiQuestion` and `:PiResearch` stream answers into a markdown popup.
+- `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
+- `:PiSession` and `:PiSessionQA` open pi in a terminal split without RPC or `--no-session`, preserving full pi session compatibility.
+- Web tools require the `pi-search` extension and `extensions = true`. If extensions are disabled, pi.nvim warns and still passes the configured tool allowlist.
 - Uses `nvim-notify` for status updates when available; otherwise falls back to a small floating status window.
 - Reloads changed loaded buffers on success so pi's on-disk edits are reflected in Neovim.
 - Treats sent buffer/selection context as newer than disk, so unsaved Neovim changes are the source of truth for the agent.

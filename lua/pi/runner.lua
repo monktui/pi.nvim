@@ -15,6 +15,9 @@ local function normalize(event)
 
   if event.type == "message_update" then
     local delta = event.assistantMessageEvent
+    if delta and delta.type == "text_delta" then
+      return { type = "text", text = delta.delta or "" }
+    end
     if delta and delta.type == "thinking_delta" then
       return { type = "thinking" }
     end

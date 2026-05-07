@@ -11,6 +11,7 @@ local function setup_test_env(setup_code)
   child.lua([[
     _G.__pi_test_notifications = {}
     _G.__pi_force_notify_backend = true
+    _G.__pi_test_history_path = vim.fn.tempname() .. "-pi-history.md"
     vim.notify = function(msg, level)
       table.insert(_G.__pi_test_notifications, { msg = msg, level = level })
     end
@@ -105,7 +106,50 @@ local function mock_system()
   }
 end
 
-local function run_pi_ask(input_text)
+local function mock_terminal()
+  child.lua([[
+    _G.__pi_test_terminal = {
+      cmd = nil,
+      sent = {},
+      split_opened = false,
+    }
+
+    local original_cmd = vim.cmd
+    vim.cmd = function(cmd)
+      if cmd == "botright split" then
+        _G.__pi_test_terminal.split_opened = true
+        return
+      end
+      if cmd == "resize 15" or cmd == "startinsert" then
+        return
+      end
+      return original_cmd(cmd)
+    end
+
+    vim.fn.termopen = function(cmd)
+      _G.__pi_test_terminal.cmd = cmd
+      return 42
+    end
+
+    vim.fn.chansend = function(job_id, data)
+      table.insert(_G.__pi_test_terminal.sent, { job_id = job_id, data = data })
+    end
+  ]])
+
+  return {
+    get_cmd = function()
+      return child.lua_get([[_G.__pi_test_terminal.cmd]])
+    end,
+    get_sent = function()
+      return child.lua_get([[table.concat(vim.tbl_map(function(item) return item.data end, _G.__pi_test_terminal.sent), "")]])
+    end,
+    split_opened = function()
+      return child.lua_get([[_G.__pi_test_terminal.split_opened]])
+    end,
+  }
+end
+
+local function run_pi_edit(input_text)
   local system = mock_system()
   child.lua(string.format(
     [[
@@ -115,15 +159,13 @@ local function run_pi_ask(input_text)
     ]],
     input_text
   ))
-  child.cmd("PiAsk")
+  child.cmd("PiEdit")
   flush()
   return system
 end
 
-local function run_pi_ask_selection(input_text, start_line, end_line)
+local function run_pi_edit_selection(input_text, start_line, end_line)
   local system = mock_system()
-  child.api.nvim_buf_set_mark(0, "<", start_line, 0, {})
-  child.api.nvim_buf_set_mark(0, ">", end_line, 999, {})
   child.lua(string.format(
     [[
       vim.ui.input = function(_, callback)
@@ -132,7 +174,26 @@ local function run_pi_ask_selection(input_text, start_line, end_line)
     ]],
     input_text
   ))
-  child.cmd("PiAskSelection")
+  child.cmd(string.format("%d,%dPiEdit", start_line, end_line))
+  flush()
+  return system
+end
+
+local function run_pi_command(input_text, command, start_line, end_line)
+  local system = mock_system()
+  child.lua(string.format(
+    [[
+      vim.ui.input = function(_, callback)
+        callback(%q)
+      end
+    ]],
+    input_text
+  ))
+  if start_line and end_line then
+    child.cmd(string.format("%d,%d%s", start_line, end_line, command))
+  else
+    child.cmd(command)
+  end
   flush()
   return system
 end
@@ -175,11 +236,19 @@ local function has_arg(cmd, flag)
   return nil
 end
 
-local function test_pi_ask_uses_vim_system_command()
+local function arg_after(cmd, flag)
+  local idx = has_arg(cmd, flag)
+  if not idx then
+    return nil
+  end
+  return cmd[idx + 1]
+end
+
+local function test_pi_edit_uses_vim_system_command()
   setup_test_env()
   setup_buffer({ "print('hello')" }, "/test/file.lua")
 
-  local system = run_pi_ask("refactor this")
+  local system = run_pi_edit("refactor this")
   local cmd = system.get_cmd()
   local stdin_mode = child.lua_get([[_G.__pi_test_system.opts.stdin]])
 
@@ -195,12 +264,12 @@ local function test_pi_ask_uses_vim_system_command()
   MiniTest.expect.no_equality(cmd[append_idx + 1]:match("Treat the provided Context as the source of truth"), nil)
 end
 
-local function test_pi_ask_includes_context_and_message()
+local function test_pi_edit_includes_context_and_message()
   setup_test_env()
   setup_buffer({ "local x = 1", "local y = 2" }, "/test/file.lua")
   set_cursor(2)
 
-  local system = run_pi_ask("what does this do")
+  local system = run_pi_edit("what does this do")
   local prompt = decode_prompt(system.get_stdin())
 
   MiniTest.expect.equality(prompt.type, "prompt")
@@ -213,7 +282,7 @@ local function test_pi_ask_includes_context_and_message()
   MiniTest.expect.equality(prompt.message:match("running inside the pi.nvim Neovim plugin"), nil)
 end
 
-local function test_pi_ask_requires_file()
+local function test_pi_edit_requires_file()
   setup_test_env()
   setup_buffer({ "code" }, nil)
   child.lua([[
@@ -222,7 +291,7 @@ local function test_pi_ask_requires_file()
     end
   ]])
 
-  child.cmd("PiAsk")
+  child.cmd("PiEdit")
 
   local notification = last_notification()
   MiniTest.expect.equality(notification.msg:match("file"), "file")
@@ -233,7 +302,7 @@ local function test_context_is_trimmed_for_speed()
   setup_buffer({ "line one", "line two", "line three" }, "/test/trim.lua")
   set_cursor(2)
 
-  local system = run_pi_ask("trim it")
+  local system = run_pi_edit("trim it")
   local prompt = decode_prompt(system.get_stdin())
 
   MiniTest.expect.equality(prompt.message:match("trimmed for speed"), "trimmed for speed")
@@ -243,7 +312,7 @@ local function test_selection_uses_nearby_context()
   setup_test_env('require("pi").setup({ context = { max_bytes = 1000, selection = { surrounding_lines = 1 } } })')
   setup_buffer({ "line1", "line2", "line3", "line4", "line5", "line6" }, "/test/select.lua")
 
-  local system = run_pi_ask_selection("focus selection", 3, 4)
+  local system = run_pi_edit_selection("focus selection", 3, 4)
   local prompt = decode_prompt(system.get_stdin())
 
   MiniTest.expect.equality(prompt.message:match("Selected lines: 3%-4"), "Selected lines: 3-4")
@@ -252,11 +321,117 @@ local function test_selection_uses_nearby_context()
   MiniTest.expect.equality(prompt.message:match("line6"), nil)
 end
 
+local function test_edit_uses_range_context_when_range_is_provided()
+  setup_test_env('require("pi").setup({ context = { max_bytes = 1000, selection = { surrounding_lines = 1 } } })')
+  setup_buffer({ "line1", "line2", "line3" }, "/test/range.lua")
+
+  local system = run_pi_command("focus range", "PiEdit", 2, 2)
+  local prompt = decode_prompt(system.get_stdin())
+
+  MiniTest.expect.equality(prompt.message:match("Selected lines: 2%-2"), "Selected lines: 2-2")
+  MiniTest.expect.equality(prompt.message:match("line2"), "line2")
+  MiniTest.expect.equality(prompt.message:match("Current line"), nil)
+end
+
+local function test_question_allows_read_search_web_tools_and_streams_answer()
+  setup_test_env()
+  setup_buffer({ "local x = 1" }, "/test/question.lua")
+
+  local system = run_pi_command("explain", "PiQuestion")
+  local cmd = system.get_cmd()
+  local append_idx = has_arg(cmd, "--append-system-prompt")
+
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,web_search,web_fetch")
+  MiniTest.expect.equality(has_arg(cmd, "--no-tools"), nil)
+  MiniTest.expect.no_equality(cmd[append_idx + 1]:match("question%-answering mode"), nil)
+
+  system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}\n')
+  MiniTest.expect.equality(child.lua_get([[require("pi")._get_active_session().answer]]), "hello")
+  system.stdout('{"type":"agent_end"}\n')
+  system.exit(0, 0)
+end
+
+local function test_research_allows_read_search_bash_web_tools()
+  setup_test_env()
+  setup_buffer({ "local x = 1" }, "/test/research.lua")
+
+  local system = run_pi_command("investigate", "PiResearch")
+  local cmd = system.get_cmd()
+  local append_idx = has_arg(cmd, "--append-system-prompt")
+
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,bash,web_search,web_fetch")
+  MiniTest.expect.equality(has_arg(cmd, "--no-tools"), nil)
+  MiniTest.expect.no_equality(cmd[append_idx + 1]:match("research mode"), nil)
+end
+
+local function test_web_tool_warning_when_extensions_disabled()
+  setup_test_env('require("pi").setup({ extensions = false })')
+  setup_buffer({ "local x = 1" }, "/test/web-tools.lua")
+
+  local system = run_pi_command("explain", "PiQuestion")
+  local cmd = system.get_cmd()
+
+  MiniTest.expect.no_equality(has_arg(cmd, "--no-extensions"), nil)
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,web_search,web_fetch")
+  MiniTest.expect.no_equality(last_notification().msg:match("pi%-search"), nil)
+end
+
+local function test_question_uses_range_context_when_range_is_provided()
+  setup_test_env('require("pi").setup({ context = { max_bytes = 1000, selection = { surrounding_lines = 1 } } })')
+  setup_buffer({ "line1", "line2", "line3" }, "/test/question-range.lua")
+
+  local system = run_pi_command("explain range", "PiQuestion", 2, 3)
+  local prompt = decode_prompt(system.get_stdin())
+
+  MiniTest.expect.equality(prompt.message:match("Selected lines: 2%-3"), "Selected lines: 2-3")
+  MiniTest.expect.equality(prompt.message:match("line2"), "line2")
+end
+
+local function test_session_qa_opens_terminal_without_rpc_or_sessionless_flags()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/session.lua")
+  local terminal = mock_terminal()
+  child.lua([[
+    vim.ui.input = function(_, callback)
+      callback("talk")
+    end
+  ]])
+
+  child.cmd("PiSessionQA")
+
+  local cmd = terminal.get_cmd()
+  MiniTest.expect.equality(terminal.split_opened(), true)
+  MiniTest.expect.equality(cmd[1], "pi")
+  MiniTest.expect.equality(has_arg(cmd, "--mode"), nil)
+  MiniTest.expect.equality(has_arg(cmd, "--no-session"), nil)
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,bash,web_search,web_fetch")
+  MiniTest.expect.no_equality(terminal.get_sent():match("Context:"), nil)
+end
+
+local function test_session_keeps_tools_enabled()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/session-edit.lua")
+  local terminal = mock_terminal()
+  child.lua([[
+    vim.ui.input = function(_, callback)
+      callback("edit")
+    end
+  ]])
+
+  child.cmd("PiSession")
+
+  local cmd = terminal.get_cmd()
+  MiniTest.expect.equality(has_arg(cmd, "--mode"), nil)
+  MiniTest.expect.equality(has_arg(cmd, "--no-session"), nil)
+  MiniTest.expect.equality(has_arg(cmd, "--no-tools"), nil)
+  MiniTest.expect.equality(has_arg(cmd, "--tools"), nil)
+end
+
 local function test_chunked_stdout_updates_and_success_notifies_done()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("go")
+  local system = run_pi_edit("go")
   MiniTest.expect.equality(child.lua_get([[require("pi").is_running()]]), true)
 
   system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta"}}')
@@ -277,7 +452,7 @@ local function test_error_notifies_and_clears_ui_state()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("break")
+  local system = run_pi_edit("break")
   system.stdout('{"type":"response","success":false,"error":"boom"}\n')
   MiniTest.expect.equality(system.stdin_was_closed(), true)
   system.exit(1, 0)
@@ -292,7 +467,7 @@ local function test_clean_exit_without_agent_end_is_an_error()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("break")
+  local system = run_pi_edit("break")
   system.exit(0, 0)
 
   MiniTest.expect.equality(child.lua_get([[require("pi").is_running()]]), false)
@@ -307,7 +482,7 @@ local function test_turn_end_does_not_finish_session()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("multi-turn")
+  local system = run_pi_edit("multi-turn")
 
   -- Simulate: tool call -> turn_end with stopReason="toolUse" -> another turn
   system.stdout('{"type":"tool_execution_start","toolName":"edit"}\n')
@@ -333,7 +508,7 @@ local function test_turn_end_followed_by_agent_end_completes()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("single turn")
+  local system = run_pi_edit("single turn")
   system.stdout('{"type":"turn_end","stopReason":"endTurn"}\n{"type":"agent_end"}\n')
   MiniTest.expect.equality(system.stdin_was_closed(), true)
   system.exit(0, 0)
@@ -346,7 +521,7 @@ local function test_cancel_kills_process_and_closes_immediately()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("cancel me")
+  local system = run_pi_edit("cancel me")
   child.cmd("PiCancel")
   flush()
 
@@ -359,7 +534,7 @@ local function test_skills_option_disables_skills()
   setup_test_env('require("pi").setup({ skills = false })')
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("test")
+  local system = run_pi_edit("test")
   local cmd = system.get_cmd()
 
   MiniTest.expect.no_equality(has_arg(cmd, "--no-skills"), nil)
@@ -369,7 +544,7 @@ local function test_extensions_option_disables_extensions()
   setup_test_env('require("pi").setup({ extensions = false })')
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("test")
+  local system = run_pi_edit("test")
   local cmd = system.get_cmd()
 
   MiniTest.expect.no_equality(has_arg(cmd, "--no-extensions"), nil)
@@ -379,7 +554,7 @@ local function test_default_thinking_is_off()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("test")
+  local system = run_pi_edit("test")
   local cmd = system.get_cmd()
   local thinking_idx = has_arg(cmd, "--thinking")
 
@@ -391,7 +566,7 @@ local function test_thinking_option_adds_cli_flag()
   setup_test_env('require("pi").setup({ thinking = "high" })')
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("test")
+  local system = run_pi_edit("test")
   local cmd = system.get_cmd()
   local thinking_idx = has_arg(cmd, "--thinking")
 
@@ -410,7 +585,7 @@ local function test_append_system_prompt_is_concatenated()
   setup_test_env('require("pi").setup({ append_system_prompt = "Always run tests" })')
   setup_buffer({ "code" }, "/test/file.lua")
 
-  local system = run_pi_ask("test")
+  local system = run_pi_edit("test")
   local cmd = system.get_cmd()
   local append_idx = has_arg(cmd, "--append-system-prompt")
 
@@ -424,24 +599,24 @@ local function test_second_request_is_blocked_while_running()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
 
-  run_pi_ask("first")
+  run_pi_edit("first")
   child.lua([[
     vim.ui.input = function(_, callback)
       callback("second")
     end
   ]])
-  child.cmd("PiAsk")
+  child.cmd("PiEdit")
 
   local notification = last_notification()
   MiniTest.expect.equality(notification.msg:match("already running"), "already running")
 end
 
-local function test_pi_ask_uses_context_around_cursor()
+local function test_pi_edit_uses_context_around_cursor()
   setup_test_env('require("pi").setup({ context = { ask = { surrounding_lines = 1 }, max_bytes = 1000 } })')
   setup_buffer({ "line1", "line2", "line3", "line4", "line5", "line6" }, "/test/cursor.lua")
   set_cursor(4)
 
-  local system = run_pi_ask("focus here")
+  local system = run_pi_edit("focus here")
   local prompt = decode_prompt(system.get_stdin())
 
   MiniTest.expect.equality(prompt.message:match("Current line: 4"), "Current line: 4")
@@ -459,7 +634,7 @@ local function test_success_overwrites_modified_buffer_with_disk_edits()
   setup_buffer({ "code" }, file)
   child.lua([[vim.bo.modified = true]])
 
-  local system = run_pi_ask("finish")
+  local system = run_pi_edit("finish")
   write_file(file, { "updated on disk" })
   system.stdout('{"type":"agent_end"}\n')
   system.exit(0, 0)
@@ -482,7 +657,7 @@ local function test_success_reloads_all_changed_loaded_buffers()
   child.lua([[vim.cmd("buffer #")]])
   child.lua([[vim.bo.modified = true]])
 
-  local system = run_pi_ask("finish")
+  local system = run_pi_edit("finish")
   write_file(file_one, { "one after agent edit" })
   write_file(file_two, { "two after agent edit" })
   system.stdout('{"type":"agent_end"}\n')
@@ -507,7 +682,7 @@ local function test_success_reloads_unmodified_buffer()
   setup_buffer({ "code" }, file)
   child.lua([[vim.bo.modified = false]])
 
-  local system = run_pi_ask("finish")
+  local system = run_pi_edit("finish")
   write_file(file, { "updated on disk" })
   system.stdout('{"type":"agent_end"}\n')
   system.exit(0, 0)
@@ -523,7 +698,7 @@ local function test_reloaded_buffer_can_be_written_without_changed_since_reading
   setup_buffer({ "before" }, file)
   child.lua([[vim.bo.modified = false]])
 
-  local system = run_pi_ask("finish")
+  local system = run_pi_edit("finish")
   write_file(file, { "after agent edit" })
   system.stdout('{"type":"agent_end"}\n')
   system.exit(0, 0)
@@ -537,28 +712,105 @@ local function test_reloaded_buffer_can_be_written_without_changed_since_reading
   MiniTest.expect.equality(last_notification(), nil)
 end
 
+local function test_removed_selection_commands_are_not_registered()
+  setup_test_env()
+
+  local commands = child.lua_get([[vim.api.nvim_get_commands({})]])
+
+  MiniTest.expect.equality(commands.PiEditSelection, nil)
+  MiniTest.expect.equality(commands.PiQuestionSelection, nil)
+  MiniTest.expect.equality(commands.PiSessionEdit, nil)
+  MiniTest.expect.equality(commands.PiSessionEditSelection, nil)
+  MiniTest.expect.equality(commands.PiSessionQuestion, nil)
+  MiniTest.expect.equality(commands.PiSessionQuestionSelection, nil)
+end
+
+local function test_history_saves_request_and_answer_for_rpc_commands()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/history.lua")
+
+  local system = run_pi_command("explain history", "PiQuestion")
+  system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"answer text"}}\n')
+  system.stdout('{"type":"agent_end"}\n')
+  system.exit(0, 0)
+
+  local history_text = child.lua_get([[table.concat(vim.fn.readfile(require("pi.history").path()), "\n")]])
+  MiniTest.expect.no_equality(history_text:match("PiQuestion"), nil)
+  MiniTest.expect.no_equality(history_text:match("explain history"), nil)
+  MiniTest.expect.no_equality(history_text:match("answer text"), nil)
+end
+
+local function test_edit_history_captures_assistant_text_without_answer_popup()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/edit-history.lua")
+
+  local system = run_pi_edit("edit history")
+  system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"changed file"}}\n')
+  system.stdout('{"type":"agent_end"}\n')
+  system.exit(0, 0)
+
+  local is_answer_backend = child.lua_get([[require("pi")._get_last_session().ui_backend == "answer"]])
+  local history_text = child.lua_get([[table.concat(vim.fn.readfile(require("pi.history").path()), "\n")]])
+  MiniTest.expect.equality(is_answer_backend, false)
+  MiniTest.expect.no_equality(history_text:match("PiEdit"), nil)
+  MiniTest.expect.no_equality(history_text:match("edit history"), nil)
+  MiniTest.expect.no_equality(history_text:match("changed file"), nil)
+end
+
+local function test_history_commands_open_markdown_buffers()
+  setup_test_env()
+  child.lua([[vim.fn.writefile({ "## first", "", "old", "---", "", "## second", "", "new", "---" }, require("pi.history").path())]])
+
+  child.cmd("PiHistoryLast")
+  MiniTest.expect.equality(child.bo.filetype, "markdown")
+  MiniTest.expect.no_equality(table.concat(child.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):match("second"), nil)
+  MiniTest.expect.equality(table.concat(child.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):match("first"), nil)
+
+  child.cmd("PiHistory")
+  MiniTest.expect.equality(child.bo.filetype, "markdown")
+end
+
 local T = MiniTest.new_set()
 
-T["PiAsk"] = MiniTest.new_set()
-T["PiAsk"]["uses vim.system command"] = test_pi_ask_uses_vim_system_command
-T["PiAsk"]["includes prompt message and context"] = test_pi_ask_includes_context_and_message
-T["PiAsk"]["requires a file"] = test_pi_ask_requires_file
-T["PiAsk"]["trims context for speed"] = test_context_is_trimmed_for_speed
-T["PiAsk"]["uses context around cursor"] = test_pi_ask_uses_context_around_cursor
-T["PiAsk"]["blocks second request while running"] = test_second_request_is_blocked_while_running
-T["PiAsk"]["overwrites modified buffer with disk edits on success"] = test_success_overwrites_modified_buffer_with_disk_edits
-T["PiAsk"]["reloads unmodified buffer on success"] = test_success_reloads_unmodified_buffer
-T["PiAsk"]["reloaded buffer can be written without changed-since-reading warning"] = test_reloaded_buffer_can_be_written_without_changed_since_reading_warning
-T["PiAsk"]["reloads all changed loaded buffers on success"] = test_success_reloads_all_changed_loaded_buffers
-T["PiAsk"]["skills option disables skills"] = test_skills_option_disables_skills
-T["PiAsk"]["extensions option disables extensions"] = test_extensions_option_disables_extensions
-T["PiAsk"]["default thinking is off"] = test_default_thinking_is_off
-T["PiAsk"]["thinking option adds cli flag"] = test_thinking_option_adds_cli_flag
-T["PiAsk"]["invalid thinking option errors"] = test_invalid_thinking_option_errors
-T["PiAsk"]["append_system_prompt is concatenated with plugin prompt"] = test_append_system_prompt_is_concatenated
+T["PiEdit"] = MiniTest.new_set()
+T["PiEdit"]["uses vim.system command"] = test_pi_edit_uses_vim_system_command
+T["PiEdit"]["includes prompt message and context"] = test_pi_edit_includes_context_and_message
+T["PiEdit"]["requires a file"] = test_pi_edit_requires_file
+T["PiEdit"]["trims context for speed"] = test_context_is_trimmed_for_speed
+T["PiEdit"]["uses context around cursor"] = test_pi_edit_uses_context_around_cursor
+T["PiEdit"]["uses range context when range is provided"] = test_edit_uses_range_context_when_range_is_provided
+T["PiEdit"]["blocks second request while running"] = test_second_request_is_blocked_while_running
+T["PiEdit"]["overwrites modified buffer with disk edits on success"] = test_success_overwrites_modified_buffer_with_disk_edits
+T["PiEdit"]["reloads unmodified buffer on success"] = test_success_reloads_unmodified_buffer
+T["PiEdit"]["reloaded buffer can be written without changed-since-reading warning"] = test_reloaded_buffer_can_be_written_without_changed_since_reading_warning
+T["PiEdit"]["reloads all changed loaded buffers on success"] = test_success_reloads_all_changed_loaded_buffers
+T["PiEdit"]["skills option disables skills"] = test_skills_option_disables_skills
+T["PiEdit"]["extensions option disables extensions"] = test_extensions_option_disables_extensions
+T["PiEdit"]["default thinking is off"] = test_default_thinking_is_off
+T["PiEdit"]["thinking option adds cli flag"] = test_thinking_option_adds_cli_flag
+T["PiEdit"]["invalid thinking option errors"] = test_invalid_thinking_option_errors
+T["PiEdit"]["append_system_prompt is concatenated with plugin prompt"] = test_append_system_prompt_is_concatenated
+T["PiEdit"]["visual range uses nearby context"] = test_selection_uses_nearby_context
+T["PiEdit"]["captures assistant text in history without answer popup"] = test_edit_history_captures_assistant_text_without_answer_popup
 
-T["PiAskSelection"] = MiniTest.new_set()
-T["PiAskSelection"]["uses nearby context"] = test_selection_uses_nearby_context
+T["PiQuestion"] = MiniTest.new_set()
+T["PiQuestion"]["allows read/search/web tools and streams answer"] = test_question_allows_read_search_web_tools_and_streams_answer
+T["PiQuestion"]["uses range context when range is provided"] = test_question_uses_range_context_when_range_is_provided
+T["PiQuestion"]["warns when web tools need disabled extensions"] = test_web_tool_warning_when_extensions_disabled
+
+T["PiResearch"] = MiniTest.new_set()
+T["PiResearch"]["allows read/search/bash/web tools"] = test_research_allows_read_search_bash_web_tools
+
+T["PiSession"] = MiniTest.new_set()
+T["PiSession"]["QA opens terminal without rpc or sessionless flags"] = test_session_qa_opens_terminal_without_rpc_or_sessionless_flags
+T["PiSession"]["keeps tools enabled"] = test_session_keeps_tools_enabled
+
+T["PiHistory"] = MiniTest.new_set()
+T["PiHistory"]["saves request and answer for RPC commands"] = test_history_saves_request_and_answer_for_rpc_commands
+T["PiHistory"]["commands open markdown buffers"] = test_history_commands_open_markdown_buffers
+
+T["Commands"] = MiniTest.new_set()
+T["Commands"]["removed selection-specific commands are absent"] = test_removed_selection_commands_are_not_registered
 
 T["Session"] = MiniTest.new_set()
 T["Session"]["handles chunked stdout and notifies on success"] = test_chunked_stdout_updates_and_success_notifies_done

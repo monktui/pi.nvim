@@ -10,15 +10,33 @@ vim.g.loaded_pi_nvim = true
 
 -- Register user-facing commands exposed by the plugin.
 
--- Open a prompt using the current buffer as additional context.
-vim.api.nvim_create_user_command("PiAsk", function()
-  require("pi").prompt_with_buffer()
-end, { desc = "Ask pi with current buffer as context" })
+vim.api.nvim_create_user_command("PiEdit", function(opts)
+  require("pi").edit(opts)
+end, { range = true, desc = "Ask pi to edit using selection or buffer context" })
 
--- Open a prompt using the current visual selection as context.
-vim.api.nvim_create_user_command("PiAskSelection", function()
-  require("pi").prompt_with_selection()
-end, { range = true, desc = "Ask pi with visual selection as context" })
+vim.api.nvim_create_user_command("PiQuestion", function(opts)
+  require("pi").question(opts)
+end, { range = true, desc = "Ask pi a quick read-only question using selection or buffer context" })
+
+vim.api.nvim_create_user_command("PiResearch", function(opts)
+  require("pi").research(opts)
+end, { range = true, desc = "Ask pi to research using selection or buffer context" })
+
+vim.api.nvim_create_user_command("PiSession", function(opts)
+  require("pi").session(opts)
+end, { range = true, desc = "Open a full pi coding session using selection or buffer context" })
+
+vim.api.nvim_create_user_command("PiSessionQA", function(opts)
+  require("pi").session_qa(opts)
+end, { range = true, desc = "Open a full pi QA/research session using selection or buffer context" })
+
+vim.api.nvim_create_user_command("PiHistory", function()
+  require("pi").show_history()
+end, { desc = "Show pi request/answer history" })
+
+vim.api.nvim_create_user_command("PiHistoryLast", function()
+  require("pi").show_last_history()
+end, { desc = "Show latest pi request/answer history entry" })
 
 -- Cancel the currently running pi request, if there is one.
 vim.api.nvim_create_user_command("PiCancel", function()

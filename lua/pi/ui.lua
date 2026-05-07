@@ -186,6 +186,71 @@ local function open_float(session, focus)
   vim.wo[session.winnr].winfixbuf = true
 end
 
+local function answer_lines(session)
+  local answer = session.answer or ""
+  local lines = { "# pi answer", "" }
+  if answer == "" then
+    lines[#lines + 1] = "Pi thinking..."
+    return lines
+  end
+  for line in (answer .. "\n"):gmatch("(.-)\n") do
+    lines[#lines + 1] = line
+  end
+  return lines
+end
+
+local function render_answer(session)
+  if not is_session_buffer_valid(session) then
+    return
+  end
+
+  vim.bo[session.bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(session.bufnr, 0, -1, false, answer_lines(session))
+  vim.bo[session.bufnr].modifiable = false
+end
+
+function M.open_answer(session, focus)
+  local width = math.min(100, math.max(50, math.floor(vim.o.columns * 0.7)))
+  local height = math.min(24, math.max(8, math.floor(vim.o.lines * 0.5)))
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
+
+  session.ui_backend = "answer"
+  session.bufnr = vim.api.nvim_create_buf(false, true)
+  vim.bo[session.bufnr].buftype = "nofile"
+  vim.bo[session.bufnr].bufhidden = "hide"
+  vim.bo[session.bufnr].swapfile = false
+  vim.bo[session.bufnr].modifiable = false
+  vim.bo[session.bufnr].filetype = "markdown"
+  vim.api.nvim_buf_set_name(session.bufnr, "pi-answer://" .. session.id)
+
+  session.winnr = vim.api.nvim_open_win(session.bufnr, focus, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " pi answer ",
+    title_pos = "center",
+    noautocmd = true,
+  })
+
+  vim.wo[session.winnr].wrap = true
+  vim.wo[session.winnr].linebreak = true
+  vim.wo[session.winnr].winfixbuf = true
+  render_answer(session)
+end
+
+function M.append_answer(session, text)
+  if not text or text == "" then
+    return
+  end
+  session.answer = (session.answer or "") .. text
+  render_answer(session)
+end
+
 function M.open(session, focus)
   session.ui_backend = has_rich_notify() and "notify" or "float"
 
@@ -201,6 +266,10 @@ function M.open(session, focus)
 end
 
 function M.update(session)
+  if session.ui_backend == "answer" then
+    render_answer(session)
+    return
+  end
   if active_statuses[session.status] then
     ensure_timer(session)
   else
