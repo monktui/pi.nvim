@@ -38,6 +38,10 @@ vim.api.nvim_create_user_command("PiHistoryLast", function()
   require("pi").show_last_history()
 end, { desc = "Show latest pi request/answer history entry" })
 
+vim.api.nvim_create_user_command("PiActivity", function()
+  require("pi").show_activity()
+end, { desc = "Toggle pi activity for the active or latest request" })
+
 -- Cancel the currently running pi request, if there is one.
 vim.api.nvim_create_user_command("PiCancel", function()
   require("pi").cancel()

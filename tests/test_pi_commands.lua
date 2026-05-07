@@ -489,6 +489,27 @@ local function test_chunked_stdout_updates_and_success_notifies_done()
   MiniTest.expect.equality(child.lua_get([[require("pi")._get_last_session().bufnr == nil]]), true)
 end
 
+local function test_activity_popup_shows_status_and_tools()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/activity.lua")
+
+  local system = run_pi_edit("show activity")
+  child.cmd("PiActivity")
+  flush()
+  local initial_text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.no_equality(initial_text:match("pi activity"), nil)
+  MiniTest.expect.no_equality(initial_text:match("PiEdit"), nil)
+
+  system.stdout('{"type":"tool_execution_start","toolName":"grep"}\n')
+  local activity_text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.no_equality(activity_text:match("Tool: grep"), nil)
+  MiniTest.expect.no_equality(activity_text:match("Tool started: grep"), nil)
+
+  child.cmd("PiActivity")
+  flush()
+  MiniTest.expect.equality(child.lua_get([[vim.api.nvim_win_get_config(0).relative]]), "")
+end
+
 local function test_error_notifies_and_clears_ui_state()
   setup_test_env()
   setup_buffer({ "code" }, "/test/file.lua")
@@ -891,6 +912,9 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
   flush()
 
+  local working_text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.no_equality(working_text:match("Status: optimizing prompt"), nil)
+
   MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--print"), nil)
   MiniTest.expect.equality(has_arg(system.get_cmd(), "--mode"), nil)
   MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--no-tools"), nil)
@@ -902,6 +926,7 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
   MiniTest.expect.no_equality(text:match("fix this maybe"), nil)
   MiniTest.expect.no_equality(text:match("Fix the selected code while preserving behavior%."), nil)
+  MiniTest.expect.no_equality(text:match("Status: optimized"), nil)
   MiniTest.expect.no_equality(text:match("Shortcuts:"), nil)
 end
 
@@ -985,6 +1010,7 @@ T["Commands"]["removed selection-specific commands are absent"] = test_removed_s
 
 T["Session"] = MiniTest.new_set()
 T["Session"]["handles chunked stdout and notifies on success"] = test_chunked_stdout_updates_and_success_notifies_done
+T["Session"]["activity popup shows status and tools"] = test_activity_popup_shows_status_and_tools
 T["Session"]["notifies and clears UI state on error"] = test_error_notifies_and_clears_ui_state
 T["Session"]["clean exit without terminal event is an error"] = test_clean_exit_without_agent_end_is_an_error
 T["Session"]["turn_end does not finish session (multi-turn tool use)"] = test_turn_end_does_not_finish_session

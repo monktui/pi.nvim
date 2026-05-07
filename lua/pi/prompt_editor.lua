@@ -3,6 +3,7 @@ local M = {}
 local PROMPT_HEADING = "# Prompt"
 local OPTIMIZED_HEADING = "# Optimized Prompt"
 local SHORTCUTS_SEPARATOR = "---"
+local STATUS_PREFIX = "Status: "
 local SHORTCUTS_HEADING = "Shortcuts:"
 
 local function cfg_value(value, fallback)
@@ -64,12 +65,37 @@ local function shortcut_lines(prompt_cfg)
 
   return {
     SHORTCUTS_SEPARATOR,
+    STATUS_PREFIX .. "idle",
+    "",
     SHORTCUTS_HEADING,
     string.format("%s         Send optimized prompt", send_key),
     string.format("%s Send optimized prompt", send_normal_key),
     string.format("%s    Optimize prompt", rewrite_key),
     string.format("%s            Cancel", cancel_key),
   }
+end
+
+local function set_status(bufnr, status)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for index, line in ipairs(lines) do
+    if line:sub(1, #STATUS_PREFIX) == STATUS_PREFIX then
+      local was_modifiable = vim.bo[bufnr].modifiable
+      vim.bo[bufnr].modifiable = true
+      vim.api.nvim_buf_set_lines(bufnr, index - 1, index, false, { STATUS_PREFIX .. status })
+      vim.bo[bufnr].modifiable = was_modifiable
+      return
+    end
+  end
+  local separator = find_line(lines, SHORTCUTS_SEPARATOR)
+  if separator then
+    local was_modifiable = vim.bo[bufnr].modifiable
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, separator, separator, false, { STATUS_PREFIX .. status, "" })
+    vim.bo[bufnr].modifiable = was_modifiable
+  end
 end
 
 local function initial_lines(initial, prompt_cfg)
@@ -215,16 +241,21 @@ function M.open(opts)
       vim.notify("No prompt to rewrite", vim.log.levels.ERROR)
       return
     end
+    set_status(bufnr, "optimizing prompt...")
     vim.bo[bufnr].modifiable = false
+    local finished = false
     opts.on_rewrite(text, function(rewritten)
       if not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
+      finished = true
       local ok, replace_err = replace_optimized(bufnr, rewritten)
       if not ok then
+        set_status(bufnr, "rewrite failed: " .. replace_err)
         vim.notify(replace_err, vim.log.levels.ERROR)
         return
       end
+      set_status(bufnr, "optimized")
       if vim.api.nvim_win_is_valid(winid) then
         vim.api.nvim_set_current_win(winid)
         vim.cmd("normal! G$")
@@ -232,6 +263,15 @@ function M.open(opts)
     end, function()
       if vim.api.nvim_buf_is_valid(bufnr) then
         vim.bo[bufnr].modifiable = true
+        if not finished then
+          set_status(bufnr, "idle")
+        end
+      end
+    end, function(message)
+      finished = true
+      if vim.api.nvim_buf_is_valid(bufnr) then
+        vim.bo[bufnr].modifiable = true
+        set_status(bufnr, "rewrite failed: " .. tostring(message))
       end
     end)
   end

@@ -25,6 +25,14 @@ local function is_session_buffer_valid(session)
   return session and session.bufnr and vim.api.nvim_buf_is_valid(session.bufnr)
 end
 
+local function is_activity_window_valid(session)
+  return session and session.activity_winnr and vim.api.nvim_win_is_valid(session.activity_winnr)
+end
+
+local function is_activity_buffer_valid(session)
+  return session and session.activity_bufnr and vim.api.nvim_buf_is_valid(session.activity_bufnr)
+end
+
 local function title_for(session)
   if session.status == "error" then
     return session.ui_backend == "notify" and "pi error" or " pi error "
@@ -209,6 +217,42 @@ local function render_answer(session)
   vim.bo[session.bufnr].modifiable = false
 end
 
+local function activity_lines(session)
+  local lines = {
+    "# pi activity",
+    "",
+    "Command: " .. (session.command_name or "pi"),
+    "Status: " .. (status_line(session) or session.status or "unknown"),
+  }
+  if session.active_tool then
+    lines[#lines + 1] = "Tool: " .. session.active_tool
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "## Events"
+  lines[#lines + 1] = ""
+
+  local events = session.activity_log or session.history or {}
+  if #events == 0 then
+    lines[#lines + 1] = "Waiting for pi..."
+    return lines
+  end
+
+  local start_idx = math.max(1, #events - 40)
+  for i = start_idx, #events do
+    lines[#lines + 1] = "- " .. tostring(events[i])
+  end
+  return lines
+end
+
+local function render_activity(session)
+  if not is_activity_buffer_valid(session) then
+    return
+  end
+  vim.bo[session.activity_bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(session.activity_bufnr, 0, -1, false, activity_lines(session))
+  vim.bo[session.activity_bufnr].modifiable = false
+end
+
 function M.open_answer(session, focus)
   local width = math.min(100, math.max(50, math.floor(vim.o.columns * 0.7)))
   local height = math.min(24, math.max(8, math.floor(vim.o.lines * 0.5)))
@@ -243,6 +287,70 @@ function M.open_answer(session, focus)
   render_answer(session)
 end
 
+local function open_activity(session, focus)
+  local width = math.min(90, math.max(50, math.floor(vim.o.columns * 0.55)))
+  local height = math.min(18, math.max(8, math.floor(vim.o.lines * 0.35)))
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
+
+  session.activity_bufnr = vim.api.nvim_create_buf(false, true)
+  vim.bo[session.activity_bufnr].buftype = "nofile"
+  vim.bo[session.activity_bufnr].bufhidden = "hide"
+  vim.bo[session.activity_bufnr].swapfile = false
+  vim.bo[session.activity_bufnr].modifiable = false
+  vim.bo[session.activity_bufnr].filetype = "markdown"
+  vim.api.nvim_buf_set_name(session.activity_bufnr, "pi-activity://" .. session.id)
+
+  session.activity_winnr = vim.api.nvim_open_win(session.activity_bufnr, focus or false, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " pi activity ",
+    title_pos = "center",
+    noautocmd = true,
+  })
+  vim.wo[session.activity_winnr].wrap = true
+  vim.wo[session.activity_winnr].linebreak = true
+  vim.wo[session.activity_winnr].winfixbuf = true
+  vim.keymap.set("n", "q", function()
+    M.toggle_activity(session)
+  end, { buffer = session.activity_bufnr, silent = true, nowait = true, desc = "Close pi activity" })
+  render_activity(session)
+end
+
+function M.toggle_activity(session, focus)
+  if not session then
+    vim.notify("No pi activity yet", vim.log.levels.INFO)
+    return
+  end
+  if is_activity_window_valid(session) then
+    pcall(vim.api.nvim_win_close, session.activity_winnr, true)
+    session.activity_winnr = nil
+    return
+  end
+  if is_activity_buffer_valid(session) then
+    session.activity_winnr = vim.api.nvim_open_win(session.activity_bufnr, focus or false, {
+      relative = "editor",
+      width = math.min(90, math.max(50, math.floor(vim.o.columns * 0.55))),
+      height = math.min(18, math.max(8, math.floor(vim.o.lines * 0.35))),
+      row = math.floor((vim.o.lines - math.min(18, math.max(8, math.floor(vim.o.lines * 0.35)))) / 2),
+      col = math.floor((vim.o.columns - math.min(90, math.max(50, math.floor(vim.o.columns * 0.55)))) / 2),
+      style = "minimal",
+      border = "rounded",
+      title = " pi activity ",
+      title_pos = "center",
+      noautocmd = true,
+    })
+    render_activity(session)
+    return
+  end
+  open_activity(session, focus)
+end
+
 function M.append_answer(session, text)
   if not text or text == "" then
     return
@@ -266,6 +374,7 @@ function M.open(session, focus)
 end
 
 function M.update(session)
+  render_activity(session)
   if session.ui_backend == "answer" then
     render_answer(session)
     return

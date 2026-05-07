@@ -142,9 +142,13 @@ Rules:
 User prompt:
 ]]
 
-local function rewrite_prompt(text, on_done, on_finish)
+local function rewrite_prompt(text, on_done, on_finish, on_error)
   if rewrite_process and not rewrite_process:is_closing() then
-    vim.notify("pi prompt rewrite is already running", vim.log.levels.WARN)
+    local message = "pi prompt rewrite is already running"
+    vim.notify(message, vim.log.levels.WARN)
+    if on_error then
+      on_error(message)
+    end
     if on_finish then
       on_finish()
     end
@@ -179,8 +183,15 @@ local function rewrite_prompt(text, on_done, on_finish)
         error_text = "exit code " .. result.code
       end
       vim.notify("pi prompt rewrite failed: " .. error_text, vim.log.levels.ERROR)
+      if on_error then
+        on_error(error_text)
+      end
     elseif answer == "" then
-      vim.notify("pi prompt rewrite produced no text", vim.log.levels.WARN)
+      local message = "produced no text"
+      vim.notify("pi prompt rewrite " .. message, vim.log.levels.WARN)
+      if on_error then
+        on_error(message)
+      end
     end
     if on_finish then
       on_finish()
@@ -188,7 +199,11 @@ local function rewrite_prompt(text, on_done, on_finish)
   end))
 
   if not ok then
-    vim.notify("pi prompt rewrite failed: " .. tostring(process), vim.log.levels.ERROR)
+    local message = tostring(process)
+    vim.notify("pi prompt rewrite failed: " .. message, vim.log.levels.ERROR)
+    if on_error then
+      on_error(message)
+    end
     if on_finish then
       on_finish()
     end
@@ -279,10 +294,26 @@ local function set_status(session, status, message)
   if not session or session.closing then
     return
   end
+  local previous = session.status
   session.status = status
+  if previous ~= status then
+    session.activity_log = session.activity_log or {}
+    table.insert(session.activity_log, (status:gsub("_", " ")))
+  end
   if message then
     session_mod.push(session, message)
+    session.activity_log = session.activity_log or {}
+    table.insert(session.activity_log, message)
   end
+  ui.update(session)
+end
+
+local function record_activity(session, message)
+  if not session then
+    return
+  end
+  session.activity_log = session.activity_log or {}
+  table.insert(session.activity_log, message)
   ui.update(session)
 end
 
@@ -415,6 +446,7 @@ local function start_session(message, build_context, opts)
   session.mode = opts.mode or "edit"
   session.context_range = opts.range
   session.cwd = vim.fn.getcwd()
+  session.activity_log = { "Prompt submitted" }
   active_session = session
   last_session = session
   if mode_config.auto_answer then
@@ -446,8 +478,10 @@ local function start_session(message, build_context, opts)
         set_status(session, "thinking")
       elseif event.type == "tool_start" then
         session.active_tool = event.tool
+        record_activity(session, "Tool started: " .. tostring(event.tool or "unknown"))
         set_status(session, "running_tool")
       elseif event.type == "tool_end" then
+        record_activity(session, "Tool finished: " .. tostring(event.tool or session.active_tool or "unknown"))
         session.active_tool = nil
         set_status(session, "thinking")
       elseif event.type == "text" then
@@ -458,9 +492,11 @@ local function start_session(message, build_context, opts)
         end
       elseif event.type == "done" then
         session.saw_terminal_event = true
+        record_activity(session, "Done")
         finish_session(session, "done")
       elseif event.type == "error" then
         session.saw_terminal_event = true
+        record_activity(session, "Error: " .. tostring(event.message))
         finish_session(session, "error", { error = event.message })
       end
     end,
@@ -469,6 +505,7 @@ local function start_session(message, build_context, opts)
         return
       end
       session_mod.push(session, line)
+      record_activity(session, line)
       ui.update(session)
     end,
     on_error = function(error_message)
@@ -710,6 +747,10 @@ end
 
 function M.show_last_history()
   history.show_last()
+end
+
+function M.show_activity()
+  ui.toggle_activity(active_session or last_session, true)
 end
 
 function M.get_buffer_context()

@@ -160,6 +160,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aq", ":PiQuestion<CR>", { desc = "Pi quest
 
 -- Ask pi to do deeper read-only research
 vim.keymap.set({ "n", "v" }, "<leader>ar", ":PiResearch<CR>", { desc = "Pi research" })
+vim.keymap.set("n", "<leader>aa", ":PiActivity<CR>", { desc = "Pi activity" })
 
 -- Open full pi terminal sessions
 vim.keymap.set({ "n", "v" }, "<leader>as", ":PiSession<CR>", { desc = "Pi session" })
@@ -179,6 +180,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 | `:PiSessionQA` | Terminal | `read,grep,find,ls,bash,web_search,web_fetch` | Open a full interactive QA/research session |
 | `:PiHistory` | Local | n/a | Open request/answer history for non-terminal commands |
 | `:PiHistoryLast` | Local | n/a | Open latest request/answer history entry |
+| `:PiActivity` | Local | n/a | Toggle activity popup for the active or latest RPC request |
 | `:PiCancel` | Local | n/a | Cancel the active RPC request immediately |
 | `:PiLog` | Local | n/a | Open the technical session log in a new split |
 
@@ -186,7 +188,8 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 
 - Runs asynchronously and keeps editing nonblocking.
 - Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
-- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, and visible shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt`, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
+- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt`, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
+- `:PiActivity` toggles a markdown activity popup for the active or latest RPC request so you can see status changes and tool calls while pi works.
 - `:PiQuestion` and `:PiResearch` stream answers into a markdown popup after you send the prompt.
 - `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
 - `:PiSession` and `:PiSessionQA` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.
