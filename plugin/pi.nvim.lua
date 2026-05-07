@@ -22,6 +22,10 @@ vim.api.nvim_create_user_command("PiResearch", function(opts)
   require("pi").research(opts)
 end, { range = true, desc = "Ask pi to research using selection or buffer context" })
 
+vim.api.nvim_create_user_command("PiReview", function(opts)
+  require("pi").review(opts)
+end, { range = true, desc = "Ask pi to review selection or buffer context" })
+
 vim.api.nvim_create_user_command("PiSession", function(opts)
   require("pi").session(opts)
 end, { range = true, desc = "Open a full pi coding session using selection or buffer context" })
@@ -29,6 +33,10 @@ end, { range = true, desc = "Open a full pi coding session using selection or bu
 vim.api.nvim_create_user_command("PiSessionQA", function(opts)
   require("pi").session_qa(opts)
 end, { range = true, desc = "Open a full pi QA/research session using selection or buffer context" })
+
+vim.api.nvim_create_user_command("PiSessionReview", function(opts)
+  require("pi").session_review(opts)
+end, { range = true, desc = "Open a full pi review session using selection or buffer context" })
 
 vim.api.nvim_create_user_command("PiHistory", function()
   require("pi").show_history()

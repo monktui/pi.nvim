@@ -8,6 +8,8 @@ local QUESTION_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugi
 
 local RESEARCH_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin in research mode. Investigate and report findings using the provided Context plus read/search/bash/web tools when useful. Do not edit, write, or mutate files, and do not run destructive shell commands. Prefer concise evidence-backed findings and cite URLs when web tools are used.]]
 
+local REVIEW_SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin in code review mode. Review the provided Context for bugs, behavioral regressions, security risks, edge cases, and missing tests. Do not edit, write, or mutate files. Prioritize findings first, ordered by severity, with file/line references when possible. Do not provide broad summaries before findings. If there are no findings, say so and mention residual risks or testing gaps.]]
+
 local BUFFER_SOURCE_OF_TRUTH_NOTE = [[NOTE: The context below comes from the current Neovim buffer and may include unsaved changes that are newer than the on-disk file. Treat this context as the source of truth for the file content, and do not read the same file only to confirm its current contents before editing.]]
 
 local EMPTY_FILE_NOTE = [[NOTE: This file is currently empty. Please create or populate it directly by applying the necessary edits so pi.nvim can write the file.]]
@@ -171,6 +173,10 @@ end
 
 function M.get_research_system_prompt()
   return RESEARCH_SYSTEM_PROMPT
+end
+
+function M.get_review_system_prompt()
+  return REVIEW_SYSTEM_PROMPT
 end
 
 function M.get_buffer_context(bufnr, config)

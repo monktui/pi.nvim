@@ -162,9 +162,13 @@ vim.keymap.set({ "n", "v" }, "<leader>aq", ":PiQuestion<CR>", { desc = "Pi quest
 vim.keymap.set({ "n", "v" }, "<leader>ar", ":PiResearch<CR>", { desc = "Pi research" })
 vim.keymap.set("n", "<leader>aa", ":PiActivity<CR>", { desc = "Pi activity" })
 
+-- Ask pi to review the current buffer or selected range
+vim.keymap.set({ "n", "v" }, "<leader>av", ":PiReview<CR>", { desc = "Pi review" })
+
 -- Open full pi terminal sessions
 vim.keymap.set({ "n", "v" }, "<leader>as", ":PiSession<CR>", { desc = "Pi session" })
 vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA session" })
+vim.keymap.set({ "n", "v" }, "<leader>aV", ":PiSessionReview<CR>", { desc = "Pi review session" })
 ```
 
 ## Usage
@@ -176,8 +180,10 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 | `:PiEdit` | RPC | Full pi tools | Prompt for an edit request using selected lines when invoked with a range, otherwise buffer context |
 | `:PiQuestion` | RPC | `read,grep,find,ls,web_search,web_fetch` | Quick read-only Q&A with repo/web lookup |
 | `:PiResearch` | RPC | `read,grep,find,ls,bash,web_search,web_fetch` | Deeper read-only investigation and reporting |
+| `:PiReview` | RPC | `read,grep,find,ls` | Review selected lines or buffer context for bugs, regressions, risks, edge cases, and missing tests |
 | `:PiSession` | Terminal | Full pi tools | Open a full interactive pi coding session |
 | `:PiSessionQA` | Terminal | `read,grep,find,ls,bash,web_search,web_fetch` | Open a full interactive QA/research session |
+| `:PiSessionReview` | Terminal | `read,grep,find,ls,bash` | Open a full interactive review session for current workspace context |
 | `:PiHistory` | Local | n/a | Open request/answer history for non-terminal commands |
 | `:PiHistoryLast` | Local | n/a | Open latest request/answer history entry |
 | `:PiActivity` | Local | n/a | Toggle activity popup for the active or latest RPC request |
@@ -188,11 +194,12 @@ vim.keymap.set({ "n", "v" }, "<leader>aQ", ":PiSessionQA<CR>", { desc = "Pi QA s
 
 - Runs asynchronously and keeps editing nonblocking.
 - Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
-- `:PiEdit`, `:PiQuestion`, and `:PiResearch` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt` using the same buffer/selection context the final command will receive, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent.
+- `:PiEdit`, `:PiQuestion`, `:PiResearch`, and `:PiReview` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt` using the same buffer/selection context the final command will receive, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent. `:PiReview` pre-fills the prompt with a review checklist.
 - `:PiActivity` toggles a markdown activity popup for the active or latest RPC request so you can see status changes and tool calls while pi works.
-- `:PiQuestion` and `:PiResearch` stream answers into a markdown popup after you send the prompt.
-- `:PiEdit`, `:PiQuestion`, and `:PiResearch` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
-- `:PiSession` and `:PiSessionQA` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.
+- `:PiQuestion`, `:PiResearch`, and `:PiReview` stream answers into a markdown popup after you send the prompt.
+- `:PiEdit`, `:PiQuestion`, `:PiResearch`, and `:PiReview` append request + assistant text to `stdpath("data")/pi.nvim/history.md`.
+- `:PiReview` and `:PiSessionReview` are read-only review modes. They ask pi to prioritize findings first with file/line references and to avoid edits/writes.
+- `:PiSession`, `:PiSessionQA`, and `:PiSessionReview` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.
 - Session context includes the current buffer, visual range metadata when invoked from visual mode, and all loaded file-backed buffers (the buffers shown as LazyVim tabs). Modified buffers are marked so unsaved changes remain source of truth.
 - Web tools require the `pi-search` extension and `extensions = true`. If extensions are disabled, pi.nvim warns and still passes the configured tool allowlist.
 - Uses `nvim-notify` for status updates when available; otherwise falls back to a small floating status window.

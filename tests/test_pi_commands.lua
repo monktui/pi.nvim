@@ -382,6 +382,54 @@ local function test_research_allows_read_search_bash_web_tools()
   MiniTest.expect.no_equality(cmd[append_idx + 1]:match("research mode"), nil)
 end
 
+local function test_review_allows_read_search_tools_and_uses_review_prompt()
+  setup_test_env()
+  setup_buffer({ "local x = 1" }, "/test/review.lua")
+
+  local system = run_pi_command("review this", "PiReview")
+  local cmd = system.get_cmd()
+  local append_idx = has_arg(cmd, "--append-system-prompt")
+
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls")
+  MiniTest.expect.equality(has_arg(cmd, "--no-tools"), nil)
+  MiniTest.expect.equality(arg_after(cmd, "--tools"):match("bash"), nil)
+  MiniTest.expect.equality(arg_after(cmd, "--tools"):match("web_search"), nil)
+  MiniTest.expect.no_equality(cmd[append_idx + 1]:match("code review mode"), nil)
+end
+
+local function test_review_uses_range_context_when_range_is_provided()
+  setup_test_env('require("pi").setup({ context = { max_bytes = 1000, selection = { surrounding_lines = 1 } } })')
+  setup_buffer({ "line1", "line2", "line3" }, "/test/review-range.lua")
+
+  local system = run_pi_command("review range", "PiReview", 2, 3)
+  local prompt = decode_prompt(system.get_stdin())
+
+  MiniTest.expect.equality(prompt.message:match("Selected lines: 2%-3"), "Selected lines: 2-3")
+  MiniTest.expect.equality(prompt.message:match("line2"), "line2")
+end
+
+local function test_review_popup_is_prefilled_with_review_prompt()
+  setup_test_env()
+  child.lua([[require("pi.config").get().prompt.popup = true]])
+  setup_buffer({ "local x = 1" }, "/test/review-popup.lua")
+  local system = mock_system()
+
+  child.cmd("PiReview")
+  flush()
+
+  local popup_text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+  MiniTest.expect.no_equality(popup_text:match("Review this code/config"), nil)
+  MiniTest.expect.no_equality(popup_text:match("# Optimized Prompt"), nil)
+
+  child.cmd("stopinsert")
+  child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<C-s>", true, false, true), "xt")]])
+  flush()
+
+  MiniTest.expect.equality(arg_after(system.get_cmd(), "--tools"), "read,grep,find,ls")
+  local prompt = decode_prompt(system.get_stdin())
+  MiniTest.expect.no_equality(prompt.message:match("Review this code/config"), nil)
+end
+
 local function test_web_tool_warning_when_extensions_disabled()
   setup_test_env('require("pi").setup({ extensions = false })')
   setup_buffer({ "local x = 1" }, "/test/web-tools.lua")
@@ -466,6 +514,31 @@ local function test_session_context_includes_open_buffers()
   MiniTest.expect.no_equality(context_text:match("/test/other.lua %(modified"), nil)
   MiniTest.expect.no_equality(context_text:match("current buffer"), nil)
   MiniTest.expect.no_equality(context_text:match("other buffer"), nil)
+end
+
+local function test_session_review_opens_terminal_with_review_tools()
+  setup_test_env()
+  setup_buffer({ "code" }, "/test/session-review.lua")
+  local terminal = mock_terminal()
+
+  child.cmd("PiSessionReview")
+
+  local cmd = terminal.get_cmd()
+  MiniTest.expect.equality(terminal.split_opened(), true)
+  MiniTest.expect.equality(cmd[1], "pi")
+  MiniTest.expect.equality(has_arg(cmd, "--mode"), nil)
+  MiniTest.expect.equality(has_arg(cmd, "--no-session"), nil)
+  MiniTest.expect.no_equality(has_arg(cmd, "--continue"), nil)
+  MiniTest.expect.no_equality(arg_after(cmd, "--session-dir"), nil)
+  MiniTest.expect.equality(arg_after(cmd, "--tools"), "read,grep,find,ls,bash")
+  MiniTest.expect.equality(terminal.get_sent(), "")
+
+  local append_idx = has_arg(cmd, "--append-system-prompt")
+  MiniTest.expect.no_equality(cmd[append_idx + 1]:match("code review mode"), nil)
+  local context_path = last_arg_after(cmd, "--append-system-prompt")
+  local context_text = child.lua_get(string.format([[table.concat(vim.fn.readfile(%q), "\n")]], context_path))
+  MiniTest.expect.no_equality(context_text:match("Neovim workspace context"), nil)
+  MiniTest.expect.no_equality(context_text:match("File: /test/session%-review%.lua"), nil)
 end
 
 local function test_chunked_stdout_updates_and_success_notifies_done()
@@ -1023,10 +1096,16 @@ T["PiQuestion"]["warns when web tools need disabled extensions"] = test_web_tool
 T["PiResearch"] = MiniTest.new_set()
 T["PiResearch"]["allows read/search/bash/web tools"] = test_research_allows_read_search_bash_web_tools
 
+T["PiReview"] = MiniTest.new_set()
+T["PiReview"]["allows read/search tools and uses review prompt"] = test_review_allows_read_search_tools_and_uses_review_prompt
+T["PiReview"]["uses range context when range is provided"] = test_review_uses_range_context_when_range_is_provided
+T["PiReview"]["popup is prefilled with review prompt"] = test_review_popup_is_prefilled_with_review_prompt
+
 T["PiSession"] = MiniTest.new_set()
 T["PiSession"]["QA opens terminal without rpc or sessionless flags"] = test_session_qa_opens_terminal_without_rpc_or_sessionless_flags
 T["PiSession"]["keeps tools enabled"] = test_session_keeps_tools_enabled
 T["PiSession"]["context includes open buffers"] = test_session_context_includes_open_buffers
+T["PiSession"]["review opens terminal with review tools"] = test_session_review_opens_terminal_with_review_tools
 
 T["PiHistory"] = MiniTest.new_set()
 T["PiHistory"]["saves request and answer for RPC commands"] = test_history_saves_request_and_answer_for_rpc_commands

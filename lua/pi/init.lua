@@ -16,13 +16,19 @@ local warned_extensions_disabled_for_web_tools = false
 
 local QA_TOOLS = { "read", "grep", "find", "ls", "web_search", "web_fetch" }
 local RESEARCH_TOOLS = { "read", "grep", "find", "ls", "bash", "web_search", "web_fetch" }
+local REVIEW_TOOLS = { "read", "grep", "find", "ls" }
+local SESSION_REVIEW_TOOLS = { "read", "grep", "find", "ls", "bash" }
+
+local REVIEW_PROMPT = "Review this code/config for bugs, regressions, security risks, edge cases, and missing tests. Prioritize findings with file/line references."
 
 local MODE_CONFIGS = {
   edit = { command = "PiEdit", prompt = "edit", auto_answer = false },
   question = { command = "PiQuestion", prompt = "question", auto_answer = true, tools = QA_TOOLS },
   research = { command = "PiResearch", prompt = "research", auto_answer = true, tools = RESEARCH_TOOLS },
+  review = { command = "PiReview", prompt = "review", auto_answer = true, tools = REVIEW_TOOLS },
   session = { command = "PiSession", prompt = "edit" },
   session_qa = { command = "PiSessionQA", prompt = "research", tools = RESEARCH_TOOLS },
+  session_review = { command = "PiSessionReview", prompt = "review", tools = SESSION_REVIEW_TOOLS },
 }
 
 local function assert_supported_version()
@@ -46,6 +52,9 @@ local function system_prompt_for(prompt_kind)
   end
   if prompt_kind == "research" then
     return context.get_research_system_prompt()
+  end
+  if prompt_kind == "review" then
+    return context.get_review_system_prompt()
   end
   return context.get_edit_system_prompt()
 end
@@ -599,7 +608,8 @@ local function start_terminal_session(build_context, opts)
   vim.cmd("startinsert")
 end
 
-local function prompt_for_command(command_name, command_opts, callback)
+local function prompt_for_command(command_name, command_opts, callback, prompt_opts)
+  prompt_opts = prompt_opts or {}
   local bufnr = ensure_file_backed_buffer(command_name)
   if not bufnr then
     return
@@ -614,7 +624,7 @@ local function prompt_for_command(command_name, command_opts, callback)
     prompt_editor.open({
       title = command_name,
       config = cfg.prompt,
-      initial = "",
+      initial = prompt_opts.initial or "",
       on_submit = function(input)
         callback(input, build_context, range)
       end,
@@ -681,6 +691,13 @@ function M.research(command_opts)
   end)
 end
 
+function M.review(command_opts)
+  assert_supported_version()
+  prompt_for_command("PiReview", command_opts, function(input, build_context, range)
+    start_session(input, build_context, { mode = "review", range = range })
+  end, { initial = REVIEW_PROMPT })
+end
+
 function M.session(command_opts)
   assert_supported_version()
   local bufnr = ensure_file_backed_buffer("PiSession")
@@ -711,6 +728,18 @@ function M.session_qa(command_opts)
   start_terminal_session(function()
     return build_workspace_context_for_range(bufnr, range)
   end, { mode = "session_qa", range = range })
+end
+
+function M.session_review(command_opts)
+  assert_supported_version()
+  local bufnr = ensure_file_backed_buffer("PiSessionReview")
+  if not bufnr then
+    return
+  end
+  local range = explicit_range(command_opts)
+  start_terminal_session(function()
+    return build_workspace_context_for_range(bufnr, range)
+  end, { mode = "session_review", range = range })
 end
 
 function M.session_question_selection(command_opts)
