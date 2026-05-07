@@ -891,9 +891,12 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
   flush()
 
+  MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--print"), nil)
+  MiniTest.expect.equality(has_arg(system.get_cmd(), "--mode"), nil)
   MiniTest.expect.no_equality(has_arg(system.get_cmd(), "--no-tools"), nil)
-  system.stdout('{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Fix the selected code while preserving behavior."}}\n')
-  system.stdout('{"type":"agent_end"}\n')
+  MiniTest.expect.no_equality(system.get_stdin():match("fix this maybe"), nil)
+  MiniTest.expect.equality(system.get_stdin():match('"type":"prompt"'), nil)
+  system.stdout("Fix the selected code while preserving behavior.\n")
   system.exit(0, 0)
 
   local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
@@ -902,7 +905,7 @@ local function test_prompt_popup_rewrites_prompt_with_ai()
   MiniTest.expect.no_equality(text:match("Shortcuts:"), nil)
 end
 
-local function test_prompt_popup_rewrites_from_final_turn_text()
+local function test_prompt_popup_rewrites_from_print_stdout_without_newline()
   setup_test_env()
   child.lua([[require("pi.config").get().prompt.popup = true; require("pi.config").get().prompt.rewrite_key = "<Space>r"]])
   setup_buffer({ "code" }, "/test/prompt-rewrite-final.lua")
@@ -924,7 +927,7 @@ local function test_prompt_popup_rewrites_from_final_turn_text()
   child.lua([[vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Space>r", true, false, true), "xt")]])
   flush()
 
-  system.stdout('{"type":"turn_end","assistantMessage":{"role":"assistant","content":[{"type":"text","text":"Explain this file purpose and main sections."}]}}')
+  system.stdout("Explain this file purpose and main sections.")
   system.exit(0, 0)
 
   local text = child.lua_get([[table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
@@ -975,7 +978,7 @@ T["PromptEditor"] = MiniTest.new_set()
 T["PromptEditor"]["submits multiline prompt"] = test_prompt_popup_submits_multiline_prompt
 T["PromptEditor"]["sends optimized prompt when present"] = test_prompt_popup_sends_optimized_prompt_when_present
 T["PromptEditor"]["rewrites prompt with ai"] = test_prompt_popup_rewrites_prompt_with_ai
-T["PromptEditor"]["rewrites from final turn text"] = test_prompt_popup_rewrites_from_final_turn_text
+T["PromptEditor"]["rewrites from print stdout without newline"] = test_prompt_popup_rewrites_from_print_stdout_without_newline
 
 T["Commands"] = MiniTest.new_set()
 T["Commands"]["removed selection-specific commands are absent"] = test_removed_selection_commands_are_not_registered
