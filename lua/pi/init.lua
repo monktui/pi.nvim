@@ -37,13 +37,8 @@ local function assert_supported_version()
   end
 end
 
-local function ensure_file_backed_buffer(command_name)
-  local bufnr = vim.api.nvim_get_current_buf()
-  if not context.buffer_is_file_backed(bufnr) then
-    vim.notify(string.format("%s requires a file", command_name), vim.log.levels.ERROR)
-    return nil
-  end
-  return bufnr
+local function current_buffer()
+  return vim.api.nvim_get_current_buf()
 end
 
 local function system_prompt_for(prompt_kind)
@@ -248,7 +243,7 @@ local function explicit_range(command_opts)
 end
 
 local function build_context_for_range(bufnr, range)
-  if range then
+  if range and context.has_file_context(bufnr) then
     return context.get_visual_context(bufnr, config.get(), range)
   end
   return context.get_buffer_context(bufnr, config.get())
@@ -610,10 +605,7 @@ end
 
 local function prompt_for_command(command_name, command_opts, callback, prompt_opts)
   prompt_opts = prompt_opts or {}
-  local bufnr = ensure_file_backed_buffer(command_name)
-  if not bufnr then
-    return
-  end
+  local bufnr = current_buffer()
 
   local range = explicit_range(command_opts)
   local function build_context()
@@ -700,10 +692,7 @@ end
 
 function M.session(command_opts)
   assert_supported_version()
-  local bufnr = ensure_file_backed_buffer("PiSession")
-  if not bufnr then
-    return
-  end
+  local bufnr = current_buffer()
   local range = explicit_range(command_opts)
   start_terminal_session(function()
     return build_workspace_context_for_range(bufnr, range)
@@ -720,10 +709,7 @@ end
 
 function M.session_qa(command_opts)
   assert_supported_version()
-  local bufnr = ensure_file_backed_buffer("PiSessionQA")
-  if not bufnr then
-    return
-  end
+  local bufnr = current_buffer()
   local range = explicit_range(command_opts)
   start_terminal_session(function()
     return build_workspace_context_for_range(bufnr, range)
@@ -732,10 +718,7 @@ end
 
 function M.session_review(command_opts)
   assert_supported_version()
-  local bufnr = ensure_file_backed_buffer("PiSessionReview")
-  if not bufnr then
-    return
-  end
+  local bufnr = current_buffer()
   local range = explicit_range(command_opts)
   start_terminal_session(function()
     return build_workspace_context_for_range(bufnr, range)

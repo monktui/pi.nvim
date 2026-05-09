@@ -36,6 +36,10 @@ function M.buffer_is_file_backed(bufnr)
   return filename ~= nil and filename ~= ""
 end
 
+function M.has_file_context(bufnr)
+  return bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr) and M.buffer_is_file_backed(bufnr)
+end
+
 function M.get_visual_selection_range()
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
@@ -60,7 +64,7 @@ function M.format_prompt_label(bufnr, selection_range)
     table.insert(components, string.format("%d:%d", selection_range.start, selection_range["end"]))
   end
   if #components == 0 then
-    return "ask pi: "
+    return string.format("ask pi (%s): ", vim.fn.fnamemodify(vim.fn.getcwd(), ":t"))
   end
   return string.format("ask pi (%s): ", table.concat(components, ":"))
 end
@@ -102,7 +106,7 @@ local function loaded_file_buffers(current_bufnr, include_open_buffers)
   local buffers = {}
   local seen = {}
 
-  if vim.api.nvim_buf_is_loaded(current_bufnr) and M.buffer_is_file_backed(current_bufnr) then
+  if current_bufnr and vim.api.nvim_buf_is_valid(current_bufnr) and vim.api.nvim_buf_is_loaded(current_bufnr) and M.buffer_is_file_backed(current_bufnr) then
     table.insert(buffers, current_bufnr)
     seen[current_bufnr] = true
   end
@@ -180,6 +184,10 @@ function M.get_review_system_prompt()
 end
 
 function M.get_buffer_context(bufnr, config)
+  if not M.has_file_context(bufnr) then
+    return M.get_cwd_context(config)
+  end
+
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local surrounding_lines = config.context.ask.surrounding_lines
@@ -211,6 +219,10 @@ function M.get_buffer_context(bufnr, config)
 end
 
 function M.get_visual_context(bufnr, config, selection_range)
+  if not M.has_file_context(bufnr) then
+    return M.get_cwd_context(config)
+  end
+
   local filename = vim.api.nvim_buf_get_name(bufnr)
   local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   selection_range = selection_range or M.get_visual_selection_range() or { start = 1, ["end"] = #all_lines }
@@ -247,13 +259,46 @@ function M.get_visual_context(bufnr, config, selection_range)
   return table.concat(parts, "\n\n")
 end
 
+function M.get_cwd_context(config)
+  local cwd = vim.fn.getcwd()
+  local parts = {
+    "Neovim workspace context",
+    string.format("Cwd: %s", cwd),
+    "Current buffer: (none; no file-backed buffer is active)",
+    "No file-backed current buffer is open. Use the cwd above as the workspace root/base folder.",
+    "Inspect files from this workspace with available tools when needed instead of asking the user to open a file first.",
+  }
+
+  local open_buffers = loaded_file_buffers(nil, true)
+  if #open_buffers > 0 then
+    parts[#parts + 1] = "Loaded file-backed buffers:"
+    for _, open_bufnr in ipairs(open_buffers) do
+      local flags = {}
+      if vim.bo[open_bufnr].modified then
+        flags[#flags + 1] = "modified"
+      end
+      local suffix = #flags > 0 and string.format(" (%s)", table.concat(flags, ", ")) or ""
+      parts[#parts + 1] = string.format("- %s%s", vim.api.nvim_buf_get_name(open_bufnr), suffix)
+    end
+  else
+    parts[#parts + 1] = "Loaded file-backed buffers: (none)"
+  end
+
+  local text, trimmed = truncate_to_bytes(table.concat(parts, "\n"), config.context.max_bytes)
+  if trimmed then
+    text = text .. string.format("\n\nNOTE: Workspace cwd context was trimmed (max_bytes=%d).", config.context.max_bytes)
+  end
+  return text
+end
+
 function M.get_workspace_context(current_bufnr, config, selection_range)
   local session_config = config.session or {}
   local max_buffer_bytes = session_config.max_buffer_bytes or config.context.max_bytes
   local max_total_context_bytes = session_config.max_total_context_bytes or (config.context.max_bytes * 3)
+  local current_has_file = M.has_file_context(current_bufnr)
   local buffers = loaded_file_buffers(current_bufnr, session_config.include_open_buffers)
   local metas = {}
-  local current_filename = vim.api.nvim_buf_get_name(current_bufnr)
+  local current_filename = current_has_file and vim.api.nvim_buf_get_name(current_bufnr) or "(none; no file-backed current buffer)"
 
   for _, bufnr in ipairs(buffers) do
     metas[#metas + 1] = buffer_metadata(bufnr, current_bufnr)
@@ -274,23 +319,29 @@ function M.get_workspace_context(current_bufnr, config, selection_range)
     string.format("Current file: %s", current_filename),
   }
 
-  if selection_range then
+  if not current_has_file then
+    summary[#summary + 1] = "No file-backed current buffer is open. Use cwd as the workspace root/base folder."
+  elseif selection_range then
     summary[#summary + 1] = string.format("Selected lines: %d-%d", selection_range.start, selection_range["end"])
   else
     summary[#summary + 1] = string.format("Current line: %d", vim.api.nvim_win_get_cursor(0)[1])
   end
 
   summary[#summary + 1] = "Open buffers:"
-  for _, meta in ipairs(metas) do
-    local flags = {}
-    if meta.current then
-      flags[#flags + 1] = "current"
+  if #metas == 0 then
+    summary[#summary + 1] = "- (none)"
+  else
+    for _, meta in ipairs(metas) do
+      local flags = {}
+      if meta.current then
+        flags[#flags + 1] = "current"
+      end
+      if meta.modified then
+        flags[#flags + 1] = "modified"
+      end
+      local suffix = #flags > 0 and string.format(" (%s)", table.concat(flags, ", ")) or ""
+      summary[#summary + 1] = string.format("- %s%s", meta.filename, suffix)
     end
-    if meta.modified then
-      flags[#flags + 1] = "modified"
-    end
-    local suffix = #flags > 0 and string.format(" (%s)", table.concat(flags, ", ")) or ""
-    summary[#summary + 1] = string.format("- %s%s", meta.filename, suffix)
   end
 
   local parts = {

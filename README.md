@@ -13,6 +13,7 @@ It's funny that all AI plugins for Neovim are quite complex to interact with, li
 ## Features
 
 - **Context aware**: Sends your current buffer, cwd, and selection as context.
+- **Workspace aware**: Works from dashboards, `[No Name]`, and empty buffers by falling back to the current working directory.
 - **Unsaved-buffer aware**: Tells pi to treat the sent Neovim buffer content as the source of truth, even if the on-disk file is stale.
 - **Simple configuration**: Just set your preferred AI model.
 - **Gets out of your way**: You ask it. It does it. Done.
@@ -193,7 +194,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aV", ":PiSessionReview<CR>", { desc = "Pi 
 ## Behavior
 
 - Runs asynchronously and keeps editing nonblocking.
-- Uses visual command ranges as selection context; otherwise uses cursor/buffer context.
+- Uses visual command ranges as selection context; otherwise uses cursor/buffer context. If the current buffer is not file-backed, commands use the current working directory as workspace/base-folder context instead of failing.
 - `:PiEdit`, `:PiQuestion`, `:PiResearch`, and `:PiReview` first open a markdown prompt popup with `# Prompt`, `# Optimized Prompt`, a visible rewrite status, and shortcuts. Write your rough prompt in `# Prompt`, press `<leader>r` to fill `# Optimized Prompt` using the same buffer/selection context the final command will receive, edit the optimized text if needed, then send with `<C-s>` or `<leader><CR>`. If `# Optimized Prompt` is empty, sending falls back to `# Prompt`. Shortcut help is never sent. `:PiReview` pre-fills the prompt with a review checklist.
 - `:PiActivity` toggles a markdown activity popup for the active or latest RPC request so you can see status changes and tool calls while pi works.
 - `:PiQuestion`, `:PiResearch`, and `:PiReview` stream answers into a markdown popup after you send the prompt.
@@ -201,6 +202,7 @@ vim.keymap.set({ "n", "v" }, "<leader>aV", ":PiSessionReview<CR>", { desc = "Pi 
 - `:PiReview` and `:PiSessionReview` are read-only review modes. They ask pi to prioritize findings first with file/line references and to avoid edits/writes.
 - `:PiSession`, `:PiSessionQA`, and `:PiSessionReview` open pi in a right-side TUI window without RPC or `--no-session`. They skip the prompt popup, reconnect to the current workspace session with `--continue`, and append current/open-buffer context as hidden system-prompt context instead of pasting text into the TUI input.
 - Session context includes the current buffer, visual range metadata when invoked from visual mode, and all loaded file-backed buffers (the buffers shown as LazyVim tabs). Modified buffers are marked so unsaved changes remain source of truth.
+- From dashboards, scratch buffers, or `[No Name]`, session context still includes the cwd and any loaded file-backed buffers, so you can start AI work before opening a file.
 - Web tools require the `pi-search` extension and `extensions = true`. If extensions are disabled, pi.nvim warns and still passes the configured tool allowlist.
 - Uses `nvim-notify` for status updates when available; otherwise falls back to a small floating status window.
 - Reloads changed loaded buffers on success so pi's on-disk edits are reflected in Neovim.

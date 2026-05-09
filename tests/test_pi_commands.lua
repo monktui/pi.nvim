@@ -300,19 +300,16 @@ local function test_pi_edit_includes_context_and_message()
   MiniTest.expect.equality(prompt.message:match("running inside the pi.nvim Neovim plugin"), nil)
 end
 
-local function test_pi_edit_requires_file()
+local function test_pi_edit_uses_cwd_context_without_file()
   setup_test_env()
   setup_buffer({ "code" }, nil)
-  child.lua([[
-    vim.ui.input = function()
-      error("vim.ui.input should not be called")
-    end
-  ]])
 
-  child.cmd("PiEdit")
+  local system = run_pi_edit("create a file")
+  local prompt = decode_prompt(system.get_stdin())
 
-  local notification = last_notification()
-  MiniTest.expect.equality(notification.msg:match("file"), "file")
+  MiniTest.expect.no_equality(prompt.message:match("Cwd: "), nil)
+  MiniTest.expect.no_equality(prompt.message:match("No file%-backed current buffer"), nil)
+  MiniTest.expect.no_equality(prompt.message:match("workspace root/base folder"), nil)
 end
 
 local function test_context_is_trimmed_for_speed()
@@ -453,6 +450,30 @@ local function test_question_uses_range_context_when_range_is_provided()
   MiniTest.expect.equality(prompt.message:match("line2"), "line2")
 end
 
+local function test_question_uses_cwd_context_without_file()
+  setup_test_env()
+  setup_buffer({ "scratch notes" }, nil)
+
+  local system = run_pi_command("what files are here?", "PiQuestion")
+  local prompt = decode_prompt(system.get_stdin())
+
+  MiniTest.expect.equality(arg_after(system.get_cmd(), "--tools"), "read,grep,find,ls,web_search,web_fetch")
+  MiniTest.expect.no_equality(prompt.message:match("No file%-backed current buffer"), nil)
+  MiniTest.expect.no_equality(prompt.message:match("workspace root/base folder"), nil)
+end
+
+local function test_review_uses_cwd_context_without_file()
+  setup_test_env()
+  setup_buffer({ "scratch notes" }, nil)
+
+  local system = run_pi_command("review workspace", "PiReview")
+  local prompt = decode_prompt(system.get_stdin())
+
+  MiniTest.expect.equality(arg_after(system.get_cmd(), "--tools"), "read,grep,find,ls")
+  MiniTest.expect.no_equality(prompt.message:match("No file%-backed current buffer"), nil)
+  MiniTest.expect.no_equality(prompt.message:match("workspace root/base folder"), nil)
+end
+
 local function test_session_qa_opens_terminal_without_rpc_or_sessionless_flags()
   setup_test_env()
   setup_buffer({ "code" }, "/test/session.lua")
@@ -514,6 +535,25 @@ local function test_session_context_includes_open_buffers()
   MiniTest.expect.no_equality(context_text:match("/test/other.lua %(modified"), nil)
   MiniTest.expect.no_equality(context_text:match("current buffer"), nil)
   MiniTest.expect.no_equality(context_text:match("other buffer"), nil)
+end
+
+local function test_session_opens_from_non_file_buffer_with_cwd_context()
+  setup_test_env()
+  setup_buffer({ "scratch" }, nil)
+  local terminal = mock_terminal()
+
+  child.cmd("PiSession")
+
+  local cmd = terminal.get_cmd()
+  MiniTest.expect.equality(terminal.split_opened(), true)
+  MiniTest.expect.equality(has_arg(cmd, "--mode"), nil)
+  MiniTest.expect.no_equality(has_arg(cmd, "--continue"), nil)
+  MiniTest.expect.equality(terminal.get_sent(), "")
+
+  local context_path = last_arg_after(cmd, "--append-system-prompt")
+  local context_text = child.lua_get(string.format([[table.concat(vim.fn.readfile(%q), "\n")]], context_path))
+  MiniTest.expect.no_equality(context_text:match("Current file: %(none; no file%-backed current buffer%)"), nil)
+  MiniTest.expect.no_equality(context_text:match("Use cwd as the workspace root/base folder"), nil)
 end
 
 local function test_session_review_opens_terminal_with_review_tools()
@@ -1070,7 +1110,7 @@ local T = MiniTest.new_set()
 T["PiEdit"] = MiniTest.new_set()
 T["PiEdit"]["uses vim.system command"] = test_pi_edit_uses_vim_system_command
 T["PiEdit"]["includes prompt message and context"] = test_pi_edit_includes_context_and_message
-T["PiEdit"]["requires a file"] = test_pi_edit_requires_file
+T["PiEdit"]["uses cwd context without file"] = test_pi_edit_uses_cwd_context_without_file
 T["PiEdit"]["trims context for speed"] = test_context_is_trimmed_for_speed
 T["PiEdit"]["uses context around cursor"] = test_pi_edit_uses_context_around_cursor
 T["PiEdit"]["uses range context when range is provided"] = test_edit_uses_range_context_when_range_is_provided
@@ -1091,6 +1131,7 @@ T["PiEdit"]["captures assistant text in history without answer popup"] = test_ed
 T["PiQuestion"] = MiniTest.new_set()
 T["PiQuestion"]["allows read/search/web tools and streams answer"] = test_question_allows_read_search_web_tools_and_streams_answer
 T["PiQuestion"]["uses range context when range is provided"] = test_question_uses_range_context_when_range_is_provided
+T["PiQuestion"]["uses cwd context without file"] = test_question_uses_cwd_context_without_file
 T["PiQuestion"]["warns when web tools need disabled extensions"] = test_web_tool_warning_when_extensions_disabled
 
 T["PiResearch"] = MiniTest.new_set()
@@ -1099,12 +1140,14 @@ T["PiResearch"]["allows read/search/bash/web tools"] = test_research_allows_read
 T["PiReview"] = MiniTest.new_set()
 T["PiReview"]["allows read/search tools and uses review prompt"] = test_review_allows_read_search_tools_and_uses_review_prompt
 T["PiReview"]["uses range context when range is provided"] = test_review_uses_range_context_when_range_is_provided
+T["PiReview"]["uses cwd context without file"] = test_review_uses_cwd_context_without_file
 T["PiReview"]["popup is prefilled with review prompt"] = test_review_popup_is_prefilled_with_review_prompt
 
 T["PiSession"] = MiniTest.new_set()
 T["PiSession"]["QA opens terminal without rpc or sessionless flags"] = test_session_qa_opens_terminal_without_rpc_or_sessionless_flags
 T["PiSession"]["keeps tools enabled"] = test_session_keeps_tools_enabled
 T["PiSession"]["context includes open buffers"] = test_session_context_includes_open_buffers
+T["PiSession"]["opens from non-file buffer with cwd context"] = test_session_opens_from_non_file_buffer_with_cwd_context
 T["PiSession"]["review opens terminal with review tools"] = test_session_review_opens_terminal_with_review_tools
 
 T["PiHistory"] = MiniTest.new_set()
